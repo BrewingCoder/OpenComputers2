@@ -129,6 +129,26 @@ repositories {
 dependencies {
     // Must use the '-neoforge' version on NeoForge. If on regular Forge, omit the '-neoforge'
     implementation 'thedarkcolour:kotlinforforge-neoforge:6.1.0a'
+
+    // Test stack — JUnit5 platform + Kotest assertions (cleaner than vanilla JUnit assertions).
+    // See docs/11-engineering-rules.md — Rule A demands tests, Rule B demands testable seams.
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation 'io.kotest:kotest-assertions-core:5.9.1'
+    // SLF4J binding — production gets one via NeoForge, tests need their own
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.16'
+}
+
+repositories {
+    mavenCentral()
+}
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+    }
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.

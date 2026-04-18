@@ -1,7 +1,9 @@
 package com.brewingcoder.oc2.block
 
 import com.brewingcoder.oc2.OpenComputers2
+import com.brewingcoder.oc2.platform.ChannelRegistrant
 import com.brewingcoder.oc2.platform.ChannelRegistry
+import com.brewingcoder.oc2.platform.Position
 import net.minecraft.core.BlockPos
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.state.BlockState
@@ -18,26 +20,39 @@ import net.minecraft.world.level.storage.ValueOutput
  *   - bound screen reference (if any)
  *   - power state (on/off)
  *
- * Lifecycle:
+ * Lifecycle (server-side only — client BE never registers, see [registryShouldTrack]):
  *   - onLoad()      → registered with ChannelRegistry
  *   - setRemoved()  → unregistered from ChannelRegistry
  *   - tick()        → called each server tick (heartbeat / scheduler tick later)
+ *
+ * Implements [ChannelRegistrant] (Rule B in docs/11) so the registry never
+ * has to know about BlockEntity.
  */
 class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
-    BlockEntity(ModBlockEntities.COMPUTER.get(), pos, state) {
+    BlockEntity(ModBlockEntities.COMPUTER.get(), pos, state),
+    ChannelRegistrant {
 
     /** Wifi channel this Computer publishes on. Matches with adapters of the same channel. */
-    var channelId: String = DEFAULT_CHANNEL
+    override var channelId: String = DEFAULT_CHANNEL
+        private set
+
+    /** Block position translated to platform-layer [Position] — exposed via [ChannelRegistrant]. */
+    override val location: Position
+        get() = Position(blockPos.x, blockPos.y, blockPos.z)
 
     private var tickCounter: Int = 0
 
+    /** Server-side BEs are the source of truth; client BEs are visual only. */
+    private val registryShouldTrack: Boolean
+        get() = level?.isClientSide == false
+
     override fun onLoad() {
         super.onLoad()
-        ChannelRegistry.register(this)
+        if (registryShouldTrack) ChannelRegistry.register(this)
     }
 
     override fun setRemoved() {
-        ChannelRegistry.unregister(this)
+        if (registryShouldTrack) ChannelRegistry.unregister(this)
         super.setRemoved()
     }
 
@@ -47,7 +62,7 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
         if (tickCounter % HEARTBEAT_TICKS == 0) {
             OpenComputers2.LOGGER.debug(
                 "computer @ {} alive on channel '{}' ({} ticks)",
-                blockPos, channelId, tickCounter
+                blockPos, channelId, tickCounter,
             )
         }
     }
@@ -55,9 +70,9 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
     /** Reassign the channel; updates the registry. */
     fun setChannel(newChannel: String) {
         if (newChannel == channelId) return
-        ChannelRegistry.unregister(this)
+        if (registryShouldTrack) ChannelRegistry.unregister(this)
         channelId = newChannel
-        ChannelRegistry.register(this)
+        if (registryShouldTrack) ChannelRegistry.register(this)
         setChanged()  // marks chunk dirty so NBT gets persisted
     }
 
