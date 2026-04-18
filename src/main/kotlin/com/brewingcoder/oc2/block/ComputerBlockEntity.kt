@@ -5,6 +5,7 @@ import com.brewingcoder.oc2.block.parts.PeripheralResolver
 import com.brewingcoder.oc2.platform.ChannelRegistrant
 import com.brewingcoder.oc2.platform.ChannelRegistry
 import com.brewingcoder.oc2.platform.Position
+import com.brewingcoder.oc2.diag.ServerLoadedComputers
 import com.brewingcoder.oc2.platform.network.NetworkAccess
 import com.brewingcoder.oc2.platform.network.NetworkInboxes
 import com.brewingcoder.oc2.network.TerminalOutputPayload
@@ -82,6 +83,14 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
 
     private var tickCounter: Int = 0
 
+    /**
+     * Ring buffer of recent script output lines, kept server-side for
+     * diagnostics. Read by [ServerLoadedComputers.consoleOf] (oc2-debug uses
+     * this to verify scripts ran without opening every computer's GUI).
+     * Bounded to avoid unbounded growth on long-running scripts.
+     */
+    private val recentOutput: ArrayDeque<String> = ArrayDeque()
+
     /** Server-side BEs are the source of truth; client BEs are visual only. */
     private val registryShouldTrack: Boolean
         get() = level?.isClientSide == false
@@ -97,12 +106,52 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
             // Files.createDirectories is idempotent.
             ensureComputerId()
             rootMount()
+            registerWithDiagnostics()
         }
     }
 
     override fun setRemoved() {
-        if (registryShouldTrack) ChannelRegistry.unregister(this)
+        if (registryShouldTrack) {
+            ChannelRegistry.unregister(this)
+            if (computerId != ID_UNASSIGNED) ServerLoadedComputers.unregister(computerId)
+        }
         super.setRemoved()
+    }
+
+    private fun registerWithDiagnostics() {
+        val dim = level?.dimension()?.location()?.toString() ?: "?"
+        ServerLoadedComputers.register(
+            ServerLoadedComputers.ComputerInfo(
+                id = computerId,
+                dimension = dim,
+                x = blockPos.x, y = blockPos.y, z = blockPos.z,
+                channelId = channelId,
+            ),
+            outputProvider = { synchronized(recentOutput) { recentOutput.toList() } },
+            writeFile = { path, content -> writeFileToMount(path, content) },
+            executeCommand = { cmd -> executeShellCommand(cmd, originator = null).lines },
+        )
+    }
+
+    /**
+     * Write [content] (UTF-8) to [path] in this computer's mount, creating
+     * parent directories as needed. Used by oc2-debug's `write_computer_file`
+     * — saves the tester from `cp`-ing into the world save directory.
+     */
+    private fun writeFileToMount(path: String, content: String) {
+        val mount = rootMount()
+        // Ensure parent dirs exist; "" path means root, makeDirectory("") would no-op.
+        val lastSlash = path.lastIndexOf('/')
+        if (lastSlash > 0) {
+            mount.makeDirectory(path.substring(0, lastSlash))
+        }
+        mount.openForWrite(path).use { ch ->
+            val buf = java.nio.ByteBuffer.wrap(content.toByteArray(Charsets.UTF_8))
+            while (buf.hasRemaining()) {
+                val n = ch.write(buf)
+                if (n <= 0) error("mount refused write — out of capacity?")
+            }
+        }
     }
 
     /** Called every server tick — wired up by ComputerBlock.getTicker. */
@@ -147,8 +196,19 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
         }
         if (lines.isNotEmpty() || clearFirst) {
             sendOutputToOriginator(lines, clearFirst)
+            recordToRecent(lines, clearFirst)
         }
         if (handle.isDone()) scriptOriginator = null
+    }
+
+    private fun recordToRecent(lines: List<String>, clearFirst: Boolean) {
+        synchronized(recentOutput) {
+            if (clearFirst) recentOutput.clear()
+            for (line in lines) {
+                recentOutput.addLast(line)
+                while (recentOutput.size > RECENT_OUTPUT_CAP) recentOutput.removeFirst()
+            }
+        }
     }
 
     private fun sendOutputToOriginator(lines: List<String>, clearFirst: Boolean) {
@@ -283,7 +343,10 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
         if (newChannel == channelId) return
         if (registryShouldTrack) ChannelRegistry.unregister(this)
         channelId = newChannel
-        if (registryShouldTrack) ChannelRegistry.register(this)
+        if (registryShouldTrack) {
+            ChannelRegistry.register(this)
+            if (computerId != ID_UNASSIGNED) registerWithDiagnostics()
+        }
         setChanged()  // marks chunk dirty so NBT gets persisted
     }
 
@@ -309,6 +372,8 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
         const val DEFAULT_CHANNEL = "default"
         const val HEARTBEAT_TICKS = 100  // 5s at 20 TPS
         const val ID_UNASSIGNED: Int = -1
+        /** Lines retained in the diagnostics ring buffer per computer. */
+        const val RECENT_OUTPUT_CAP: Int = 200
         private const val NBT_CHANNEL = "channelId"
         private const val NBT_COMPUTER_ID = "computerId"
 

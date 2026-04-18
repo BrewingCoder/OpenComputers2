@@ -1,5 +1,11 @@
 {
-  "variants": {
-    "": { "model": "oc2:block/adapter" }
-  }
+  "multipart": [
+    { "apply": { "model": "oc2:block/adapter_core" } },
+    { "when": { "conn_north": "true" }, "apply": { "model": "oc2:block/adapter_arm" } },
+    { "when": { "conn_south": "true" }, "apply": { "model": "oc2:block/adapter_arm", "y": 180 } },
+    { "when": { "conn_east":  "true" }, "apply": { "model": "oc2:block/adapter_arm", "y": 90  } },
+    { "when": { "conn_west":  "true" }, "apply": { "model": "oc2:block/adapter_arm", "y": 270 } },
+    { "when": { "conn_up":    "true" }, "apply": { "model": "oc2:block/adapter_arm", "x": 270 } },
+    { "when": { "conn_down":  "true" }, "apply": { "model": "oc2:block/adapter_arm", "x": 90  } }
+  ]
 }

@@ -25,5 +25,6 @@ object ClientRenderers {
     @SubscribeEvent
     fun onRegisterBlockEntityRenderers(event: EntityRenderersEvent.RegisterRenderers) {
         event.registerBlockEntityRenderer(ModBlockEntities.MONITOR.get()) { ctx -> MonitorRenderer(ctx) }
+        event.registerBlockEntityRenderer(ModBlockEntities.ADAPTER.get()) { ctx -> AdapterRenderer(ctx) }
     }
 }

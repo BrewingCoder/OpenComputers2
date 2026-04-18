@@ -70,6 +70,7 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
                 part.onAttach(host(face))
                 registerPart(face, part)
             }
+            recomputeConnections()
             OpenComputers2.LOGGER.info("adapter @ {} loaded with {} parts on channel '{}'",
                 blockPos, parts.size, channelId)
         }
@@ -94,6 +95,7 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
         for ((face, part) in parts) {
             part.onNeighborChanged(host(face))
         }
+        recomputeConnections()
     }
 
     // ---------- part install / remove ----------
@@ -111,6 +113,7 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
         if (registryShouldTrack) {
             part.onAttach(host(face))
             registerPart(face, part)
+            recomputeConnections()
         }
         setChanged()
         sync()
@@ -125,6 +128,7 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
         if (registryShouldTrack) {
             unregisterPart(face)
             part.onDetach()
+            recomputeConnections()
         }
         setChanged()
         sync()
@@ -135,6 +139,10 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
 
     fun partOn(face: Direction): Part? = parts[face]
     fun installedFaces(): Set<Direction> = parts.keys.toSet()
+
+    /** Snapshot of (face → part typeId) for client-side rendering. Cheap; called per frame. */
+    fun renderSnapshot(): Map<Direction, String> =
+        parts.mapValues { it.value.typeId }
 
     fun setChannel(newChannel: String) {
         if (newChannel == channelId) return
@@ -147,6 +155,34 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
             channelId = newChannel
         }
         setChanged()
+    }
+
+    /**
+     * Recompute the per-face connection booleans on the blockstate. A face is
+     * connected when there's a part on it OR the adjacent block is another
+     * adapter (visual-only auto-cabling). Pushes a single setBlock if any value
+     * changed — clients pick up the new state via vanilla block-update sync.
+     *
+     * Server-thread only. Cheap; fixed 6-iteration loop.
+     */
+    private fun recomputeConnections() {
+        val lvl = level ?: return
+        if (lvl.isClientSide) return
+        var newState = blockState
+        var anyChanged = false
+        for (face in Direction.entries) {
+            val prop = AdapterBlock.propertyFor(face)
+            val should = parts.containsKey(face) || (lvl.getBlockState(blockPos.relative(face)).block is AdapterBlock)
+            if (newState.getValue(prop) != should) {
+                newState = newState.setValue(prop, should)
+                anyChanged = true
+            }
+        }
+        if (anyChanged) {
+            // flag 2: clients only, no neighbor cascade — same lesson as Monitor
+            // (avoid save-time cascade that hung the server in earlier work).
+            lvl.setBlock(blockPos, newState, 2)
+        }
     }
 
     private fun registerPart(face: Direction, part: Part) {
