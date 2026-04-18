@@ -90,12 +90,20 @@ try { fs.read("missing.txt"); } catch (e) { print("nope:", e.message); }
 ## `peripheral` — devices on the wifi channel
 
 A peripheral is any block on the same wifi channel as this Computer that
-exposes a method surface (currently only Monitor).
+exposes a method surface. R1 ships:
+
+- `monitor` — display + touch (see below)
+- `inventory` / `fluid` / `energy` / `redstone` — Adapter parts that wrap
+  the adjacent block's NeoForge capability (see [Adapter parts](#adapter-parts))
 
 | Function | Returns |
 |---|---|
-| `peripheral.find(kind)` | handle or nil/null |
+| `peripheral.find(kind)` | first handle of [kind] on this channel, or nil/null |
 | `peripheral.list([kind])` | array of handles (filtered by kind if given) |
+
+Each handle has `.kind` (always the type id) and most have `.name` (the
+display name — auto-generated like `inv_north_3` or whatever the player labeled
+it). Use `.name` to disambiguate when several adapters expose the same kind.
 
 ## `monitor` — display + touch surface
 
@@ -216,6 +224,78 @@ while true do
     end
   end
   sleep(100)
+end
+```
+
+## Adapter parts
+
+The **Adapter** block hosts up to one part per face (6 max). Each installed
+part registers as its own peripheral on the adapter's wifi channel — scripts
+look them up via `peripheral.find(kind)` / `peripheral.list(kind)` exactly
+like a monitor.
+
+To install: hold the part item, right-click the adapter face you want to
+attach it to. The part reads from / writes to whatever block sits on the
+*other* side of that face.
+
+R1 ships four part kinds:
+
+### `inventory` — wraps any `IItemHandler` (chests, barrels, hoppers, machines)
+
+| Method | Notes |
+|---|---|
+| `inv.size()` | slot count |
+| `inv.getItem(slot)` | `{id, count}` or nil; **slots are 1-indexed** |
+| `inv.list()` | array length [size]; nils for empty slots |
+| `inv.find(itemId)` | first slot containing [itemId] (`"minecraft:diamond"`), or -1 |
+| `inv.push(slot, target [, count [, targetSlot]])` | move items → returns count moved |
+| `inv.pull(source, slot [, count [, targetSlot]])` | inverse of push |
+
+```lua
+local chest = peripheral.find("inventory")
+local diamonds = chest.find("minecraft:diamond")
+if diamonds > 0 then
+  local s = chest.getItem(diamonds)
+  print(s.id, s.count)
+end
+```
+
+### `fluid` — wraps any `IFluidHandler` (tanks, machines)
+
+| Method | Notes |
+|---|---|
+| `fl.tanks()` | tank count |
+| `fl.getFluid(tank)` | `{id, amount}` or nil; **1-indexed**, amount in mB |
+| `fl.list()` | snapshots for every tank |
+| `fl.push(target [, amount])` | move mB → returns mB moved |
+| `fl.pull(source [, amount])` | inverse |
+
+### `energy` — wraps any `IEnergyStorage` (FE buffers, generators)
+
+| Method | Notes |
+|---|---|
+| `en.stored()` | current FE |
+| `en.capacity()` | max FE |
+| `en.push(target [, amount])` | transfer FE → returns amount moved |
+| `en.pull(source [, amount])` | inverse |
+
+### `redstone` — read input / write output on this face
+
+Not a NeoForge capability — vanilla redstone goes through the block face
+directly.
+
+| Method | Notes |
+|---|---|
+| `rs.getInput()` | signal feeding INTO our face (0–15) |
+| `rs.getOutput()` | signal we're emitting OUT of our face (0–15) |
+| `rs.setOutput(level)` | set emission; sticky until changed |
+
+```lua
+local rs = peripheral.find("redstone")
+if rs.getInput() > 0 then
+  rs.setOutput(15)   -- echo full strength while powered
+else
+  rs.setOutput(0)
 end
 ```
 

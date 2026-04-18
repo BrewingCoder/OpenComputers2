@@ -1,7 +1,11 @@
 package com.brewingcoder.oc2.platform.script
 
 import com.brewingcoder.oc2.platform.os.ShellOutput
+import com.brewingcoder.oc2.platform.peripheral.EnergyPeripheral
+import com.brewingcoder.oc2.platform.peripheral.FluidPeripheral
+import com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral
 import com.brewingcoder.oc2.platform.peripheral.MonitorPeripheral
+import com.brewingcoder.oc2.platform.peripheral.RedstonePeripheral
 import com.brewingcoder.oc2.platform.storage.StorageException
 import com.brewingcoder.oc2.platform.storage.WritableMount
 import org.mozilla.javascript.BaseFunction
@@ -109,8 +113,134 @@ class RhinoJSHost : ScriptHost {
 
     private fun wrapAnyPeripheral(p: com.brewingcoder.oc2.platform.peripheral.Peripheral, parent: Scriptable): Any? = when (p) {
         is MonitorPeripheral -> wrapMonitor(p, parent)
+        is InventoryPeripheral -> wrapInventory(p, parent)
+        is RedstonePeripheral -> wrapRedstone(p, parent)
+        is FluidPeripheral -> wrapFluid(p, parent)
+        is EnergyPeripheral -> wrapEnergy(p, parent)
         else -> null
     }
+
+    private fun wrapFluid(fl: FluidPeripheral, parent: Scriptable): ScriptableObject {
+        val obj = NativeObject()
+        ScriptableObject.putProperty(obj, "kind", fl.kind)
+        ScriptableObject.putProperty(obj, "name", fl.name)
+        fluidHandles[obj] = fl
+        defineFsMethod(obj, "tanks", parent, 0) { _ -> fl.tanks() }
+        defineFsMethod(obj, "getFluid", parent, 1) { args ->
+            val s = fl.getFluid((args.getOrNull(0) as? Number)?.toInt() ?: 0) ?: return@defineFsMethod null
+            fluidSnapshotToJs(s)
+        }
+        defineFsMethod(obj, "list", parent, 0) { _ ->
+            val list = fl.list()
+            val arr = cx().newArray(parent, list.size)
+            for ((i, s) in list.withIndex()) arr.put(i, arr, s?.let { fluidSnapshotToJs(it) })
+            arr
+        }
+        defineFsMethod(obj, "push", parent, 2) { args ->
+            val tgt = (args.getOrNull(0) as? ScriptableObject)?.let { fluidHandles[it] } ?: return@defineFsMethod 0
+            val amount = (args.getOrNull(1) as? Number)?.toInt() ?: 1000
+            fl.push(tgt, amount)
+        }
+        defineFsMethod(obj, "pull", parent, 2) { args ->
+            val src = (args.getOrNull(0) as? ScriptableObject)?.let { fluidHandles[it] } ?: return@defineFsMethod 0
+            val amount = (args.getOrNull(1) as? Number)?.toInt() ?: 1000
+            fl.pull(src, amount)
+        }
+        return obj
+    }
+
+    private fun fluidSnapshotToJs(s: FluidPeripheral.FluidSnapshot): ScriptableObject {
+        val o = NativeObject()
+        ScriptableObject.putProperty(o, "id", s.id)
+        ScriptableObject.putProperty(o, "amount", s.amount)
+        return o
+    }
+
+    private val fluidHandles: java.util.WeakHashMap<ScriptableObject, FluidPeripheral> = java.util.WeakHashMap()
+
+    private fun wrapEnergy(en: EnergyPeripheral, parent: Scriptable): ScriptableObject {
+        val obj = NativeObject()
+        ScriptableObject.putProperty(obj, "kind", en.kind)
+        ScriptableObject.putProperty(obj, "name", en.name)
+        energyHandles[obj] = en
+        defineFsMethod(obj, "stored", parent, 0) { _ -> en.stored() }
+        defineFsMethod(obj, "capacity", parent, 0) { _ -> en.capacity() }
+        defineFsMethod(obj, "push", parent, 2) { args ->
+            val tgt = (args.getOrNull(0) as? ScriptableObject)?.let { energyHandles[it] } ?: return@defineFsMethod 0
+            val amount = (args.getOrNull(1) as? Number)?.toInt() ?: Int.MAX_VALUE
+            en.push(tgt, amount)
+        }
+        defineFsMethod(obj, "pull", parent, 2) { args ->
+            val src = (args.getOrNull(0) as? ScriptableObject)?.let { energyHandles[it] } ?: return@defineFsMethod 0
+            val amount = (args.getOrNull(1) as? Number)?.toInt() ?: Int.MAX_VALUE
+            en.pull(src, amount)
+        }
+        return obj
+    }
+
+    private val energyHandles: java.util.WeakHashMap<ScriptableObject, EnergyPeripheral> = java.util.WeakHashMap()
+
+    private fun wrapRedstone(rs: RedstonePeripheral, parent: Scriptable): ScriptableObject {
+        val obj = NativeObject()
+        ScriptableObject.putProperty(obj, "kind", rs.kind)
+        ScriptableObject.putProperty(obj, "name", rs.name)
+        defineFsMethod(obj, "getInput", parent, 0) { _ -> rs.getInput() }
+        defineFsMethod(obj, "getOutput", parent, 0) { _ -> rs.getOutput() }
+        defineFsMethod(obj, "setOutput", parent, 1) { args ->
+            rs.setOutput((args.getOrNull(0) as? Number)?.toInt() ?: 0); Undefined.instance
+        }
+        return obj
+    }
+
+    /** JS counterpart to [CobaltLuaHost.wrapInventory]. 1-indexed slots, same surface. */
+    private fun wrapInventory(inv: InventoryPeripheral, parent: Scriptable): ScriptableObject {
+        val obj = NativeObject()
+        ScriptableObject.putProperty(obj, "kind", inv.kind)
+        ScriptableObject.putProperty(obj, "name", inv.name)
+        // Stash the native handle so push/pull can recover the underlying inventory.
+        invHandles[obj] = inv
+        defineFsMethod(obj, "size", parent, 0) { _ -> inv.size() }
+        defineFsMethod(obj, "getItem", parent, 1) { args ->
+            val s = inv.getItem((args.getOrNull(0) as? Number)?.toInt() ?: 0) ?: return@defineFsMethod null
+            itemSnapshotToJs(s)
+        }
+        defineFsMethod(obj, "list", parent, 0) { _ ->
+            val list = inv.list()
+            val arr = cx().newArray(parent, list.size)
+            for ((i, s) in list.withIndex()) {
+                arr.put(i, arr, s?.let { itemSnapshotToJs(it) })
+            }
+            arr
+        }
+        defineFsMethod(obj, "find", parent, 1) { args -> inv.find(asString(args, 0)) }
+        defineFsMethod(obj, "push", parent, 4) { args ->
+            val slot = (args.getOrNull(0) as? Number)?.toInt() ?: 0
+            val targetObj = args.getOrNull(1) as? ScriptableObject
+            val target = targetObj?.let { invHandles[it] } ?: return@defineFsMethod 0
+            val count = (args.getOrNull(2) as? Number)?.toInt() ?: 64
+            val targetSlot = (args.getOrNull(3) as? Number)?.toInt()
+            inv.push(slot, target, count, targetSlot)
+        }
+        defineFsMethod(obj, "pull", parent, 4) { args ->
+            val sourceObj = args.getOrNull(0) as? ScriptableObject
+            val source = sourceObj?.let { invHandles[it] } ?: return@defineFsMethod 0
+            val slot = (args.getOrNull(1) as? Number)?.toInt() ?: 0
+            val count = (args.getOrNull(2) as? Number)?.toInt() ?: 64
+            val targetSlot = (args.getOrNull(3) as? Number)?.toInt()
+            inv.pull(source, slot, count, targetSlot)
+        }
+        return obj
+    }
+
+    private fun itemSnapshotToJs(s: InventoryPeripheral.ItemSnapshot): ScriptableObject {
+        val o = NativeObject()
+        ScriptableObject.putProperty(o, "id", s.id)
+        ScriptableObject.putProperty(o, "count", s.count)
+        return o
+    }
+
+    /** Per-eval weak map; same rationale as [CobaltLuaHost.invHandles]. */
+    private val invHandles: java.util.WeakHashMap<ScriptableObject, InventoryPeripheral> = java.util.WeakHashMap()
 
     /**
      * Build the `network` JS object:

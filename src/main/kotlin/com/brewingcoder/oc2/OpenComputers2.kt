@@ -2,6 +2,7 @@ package com.brewingcoder.oc2
 
 import com.brewingcoder.oc2.block.ModBlockEntities
 import com.brewingcoder.oc2.block.ModBlocks
+import com.brewingcoder.oc2.block.parts.ModParts
 import com.brewingcoder.oc2.client.OC2ClientConfig
 import com.brewingcoder.oc2.item.ModItems
 import com.brewingcoder.oc2.item.ModTabs
@@ -36,6 +37,10 @@ object OpenComputers2 {
         ModBlockEntities.REGISTRY.register(MOD_BUS)
         ModItems.REGISTRY.register(MOD_BUS)
         ModTabs.REGISTRY.register(MOD_BUS)
+
+        // Part type registry — lookups happen during BE NBT load, must be ready
+        // before any world loads. No DeferredRegister; static map.
+        ModParts.register()
 
         // Register the client config — backing toml lives at config/oc2-client.toml
         // and players can edit values without rebuilding the mod.

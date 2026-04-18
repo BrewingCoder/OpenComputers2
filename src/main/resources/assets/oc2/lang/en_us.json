@@ -2,6 +2,11 @@
   "itemGroup.oc2.main": "OpenComputers2",
   "block.oc2.computer": "Computer",
   "block.oc2.monitor": "Monitor",
+  "block.oc2.adapter": "Adapter",
+  "item.oc2.inventory_part": "Inventory Part",
+  "item.oc2.redstone_part": "Redstone Part",
+  "item.oc2.fluid_part": "Fluid Part",
+  "item.oc2.energy_part": "Energy Part",
 
   "screen.oc2.computer": "Computer",
   "screen.oc2.computer.power": "Power",

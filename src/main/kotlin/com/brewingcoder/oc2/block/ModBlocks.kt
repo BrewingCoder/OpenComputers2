@@ -35,4 +35,12 @@ object ModBlocks {
             .lightLevel { 4 }
     )
     val MONITOR: MonitorBlock by MONITOR_HOLDER
+
+    val ADAPTER_HOLDER: DeferredBlock<AdapterBlock> = REGISTRY.registerBlock(
+        "adapter",
+        { props -> AdapterBlock(props) },
+        BlockBehaviour.Properties.of()
+            .strength(2.0f)
+    )
+    val ADAPTER: AdapterBlock by ADAPTER_HOLDER
 }

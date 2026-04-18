@@ -1,6 +1,7 @@
 package com.brewingcoder.oc2.block
 
 import com.brewingcoder.oc2.OpenComputers2
+import com.brewingcoder.oc2.block.parts.PeripheralResolver
 import com.brewingcoder.oc2.platform.ChannelRegistrant
 import com.brewingcoder.oc2.platform.ChannelRegistry
 import com.brewingcoder.oc2.platform.Position
@@ -241,11 +242,11 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
      */
     private fun findPeripheralOnChannel(kind: String): Peripheral? {
         val match = ChannelRegistry.findOnChannel(channelId, kind) ?: return null
-        return match as? Peripheral
+        return PeripheralResolver.resolve(match)
     }
 
     private fun listPeripheralsOnChannel(kind: String?): List<Peripheral> =
-        ChannelRegistry.listOnChannel(channelId, kind).mapNotNull { it as? Peripheral }
+        ChannelRegistry.listOnChannel(channelId, kind).mapNotNull { PeripheralResolver.resolve(it) }
 
     /**
      * Broadcast [message] to every other [ComputerBlockEntity] on [channel] (or

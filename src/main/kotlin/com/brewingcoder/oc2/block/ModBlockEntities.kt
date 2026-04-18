@@ -29,4 +29,10 @@ object ModBlockEntities {
             .of(::MonitorBlockEntity, ModBlocks.MONITOR)
             .build(null)
     }
+
+    val ADAPTER = REGISTRY.register("adapter") { ->
+        BlockEntityType.Builder
+            .of(::AdapterBlockEntity, ModBlocks.ADAPTER)
+            .build(null)
+    }
 }

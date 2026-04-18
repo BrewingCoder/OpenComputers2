@@ -27,6 +27,11 @@ object ModTabs {
                 // every player-facing item OC2 ships goes here
                 output.accept(ModItems.COMPUTER)
                 output.accept(ModItems.MONITOR)
+                output.accept(ModItems.ADAPTER)
+                output.accept(ModItems.INVENTORY_PART)
+                output.accept(ModItems.REDSTONE_PART)
+                output.accept(ModItems.FLUID_PART)
+                output.accept(ModItems.ENERGY_PART)
             }
             .build()
     }

@@ -1,7 +1,11 @@
 package com.brewingcoder.oc2.platform.script
 
 import com.brewingcoder.oc2.platform.os.ShellOutput
+import com.brewingcoder.oc2.platform.peripheral.EnergyPeripheral
+import com.brewingcoder.oc2.platform.peripheral.FluidPeripheral
+import com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral
 import com.brewingcoder.oc2.platform.peripheral.MonitorPeripheral
+import com.brewingcoder.oc2.platform.peripheral.RedstonePeripheral
 import com.brewingcoder.oc2.platform.storage.StorageException
 import com.brewingcoder.oc2.platform.storage.WritableMount
 import org.squiddev.cobalt.Constants
@@ -180,7 +184,85 @@ class CobaltLuaHost : ScriptHost {
 
     private fun wrapPeripheral(p: com.brewingcoder.oc2.platform.peripheral.Peripheral): LuaValue = when (p) {
         is MonitorPeripheral -> wrapMonitor(p)
+        is InventoryPeripheral -> wrapInventory(p)
+        is RedstonePeripheral -> wrapRedstone(p)
+        is FluidPeripheral -> wrapFluid(p)
+        is EnergyPeripheral -> wrapEnergy(p)
         else -> Constants.NIL
+    }
+
+    private fun wrapFluid(fl: FluidPeripheral): LuaTable {
+        val t = LuaTable()
+        t.rawset("kind", ValueFactory.valueOf(fl.kind))
+        t.rawset("name", ValueFactory.valueOf(fl.name))
+        fluidHandles[t] = fl
+        t.rawset("tanks", fn { ValueFactory.valueOf(fl.tanks()) })
+        t.rawset("getFluid", fn { args ->
+            val s = fl.getFluid(args.arg(1).toInteger().toInt()) ?: return@fn Constants.NIL
+            fluidSnapshotToTable(s)
+        })
+        t.rawset("list", fn {
+            val arr = LuaTable()
+            for ((i, snap) in fl.list().withIndex()) {
+                arr.rawset(i + 1, snap?.let { fluidSnapshotToTable(it) } ?: Constants.NIL)
+            }
+            arr
+        })
+        t.rawset("push", fn { args ->
+            val tgt = (args.arg(1) as? LuaTable)?.let { fluidHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+            val amount = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else 1000
+            ValueFactory.valueOf(fl.push(tgt, amount))
+        })
+        t.rawset("pull", fn { args ->
+            val src = (args.arg(1) as? LuaTable)?.let { fluidHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+            val amount = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else 1000
+            ValueFactory.valueOf(fl.pull(src, amount))
+        })
+        return t
+    }
+
+    private fun fluidSnapshotToTable(s: FluidPeripheral.FluidSnapshot): LuaTable {
+        val o = LuaTable()
+        o.rawset("id", ValueFactory.valueOf(s.id))
+        o.rawset("amount", ValueFactory.valueOf(s.amount))
+        return o
+    }
+
+    private val fluidHandles: java.util.WeakHashMap<LuaTable, FluidPeripheral> = java.util.WeakHashMap()
+
+    private fun wrapEnergy(en: EnergyPeripheral): LuaTable {
+        val t = LuaTable()
+        t.rawset("kind", ValueFactory.valueOf(en.kind))
+        t.rawset("name", ValueFactory.valueOf(en.name))
+        energyHandles[t] = en
+        t.rawset("stored", fn { ValueFactory.valueOf(en.stored()) })
+        t.rawset("capacity", fn { ValueFactory.valueOf(en.capacity()) })
+        t.rawset("push", fn { args ->
+            val tgt = (args.arg(1) as? LuaTable)?.let { energyHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+            val amount = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else Int.MAX_VALUE
+            ValueFactory.valueOf(en.push(tgt, amount))
+        })
+        t.rawset("pull", fn { args ->
+            val src = (args.arg(1) as? LuaTable)?.let { energyHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+            val amount = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else Int.MAX_VALUE
+            ValueFactory.valueOf(en.pull(src, amount))
+        })
+        return t
+    }
+
+    private val energyHandles: java.util.WeakHashMap<LuaTable, EnergyPeripheral> = java.util.WeakHashMap()
+
+    private fun wrapRedstone(rs: RedstonePeripheral): LuaTable {
+        val t = LuaTable()
+        t.rawset("kind", ValueFactory.valueOf(rs.kind))
+        t.rawset("name", ValueFactory.valueOf(rs.name))
+        t.rawset("getInput", fn { ValueFactory.valueOf(rs.getInput()) })
+        t.rawset("getOutput", fn { ValueFactory.valueOf(rs.getOutput()) })
+        t.rawset("setOutput", fn { args ->
+            rs.setOutput(args.arg(1).toInteger().toInt())
+            Constants.NIL
+        })
+        return t
     }
 
     /**
@@ -316,6 +398,70 @@ class CobaltLuaHost : ScriptHost {
         })
         return t
     }
+
+    /**
+     * Wrap an [InventoryPeripheral]. Methods take 1-indexed slots (Lua tradition);
+     * the underlying impl matches.
+     *
+     * `getItem`/`list` produce `{id=string, count=int}` tables (or nil for empty
+     * slots in `list`). `push`/`pull` accept another inventory handle from
+     * `peripheral.find`/`peripheral.list` — we recover it via Lua's userdata-as-table
+     * convention by stashing the underlying handle on the table at `__handle`.
+     */
+    private fun wrapInventory(inv: InventoryPeripheral): LuaTable {
+        val t = LuaTable()
+        t.rawset("kind", ValueFactory.valueOf(inv.kind))
+        t.rawset("name", ValueFactory.valueOf(inv.name))
+        // Stash the native handle so push/pull can resolve "the other end" back to a Peripheral.
+        invHandles[t] = inv
+        t.rawset("size", fn { ValueFactory.valueOf(inv.size()) })
+        t.rawset("getItem", fn { args ->
+            val s = inv.getItem(args.arg(1).toInteger().toInt()) ?: return@fn Constants.NIL
+            itemSnapshotToTable(s)
+        })
+        t.rawset("list", fn {
+            val arr = LuaTable()
+            for ((i, snap) in inv.list().withIndex()) {
+                arr.rawset(i + 1, snap?.let { itemSnapshotToTable(it) } ?: Constants.NIL)
+            }
+            arr
+        })
+        t.rawset("find", fn { args ->
+            ValueFactory.valueOf(inv.find(args.arg(1).toString()))
+        })
+        t.rawset("push", fn { args ->
+            val slot = args.arg(1).toInteger().toInt()
+            val targetTable = args.arg(2) as? LuaTable
+            val target = targetTable?.let { invHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+            val count = if (args.count() >= 3 && !args.arg(3).isNil()) args.arg(3).toInteger().toInt() else 64
+            val targetSlot = if (args.count() >= 4 && !args.arg(4).isNil()) args.arg(4).toInteger().toInt() else null
+            ValueFactory.valueOf(inv.push(slot, target, count, targetSlot))
+        })
+        t.rawset("pull", fn { args ->
+            val sourceTable = args.arg(1) as? LuaTable
+            val source = sourceTable?.let { invHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+            val slot = args.arg(2).toInteger().toInt()
+            val count = if (args.count() >= 3 && !args.arg(3).isNil()) args.arg(3).toInteger().toInt() else 64
+            val targetSlot = if (args.count() >= 4 && !args.arg(4).isNil()) args.arg(4).toInteger().toInt() else null
+            ValueFactory.valueOf(inv.pull(source, slot, count, targetSlot))
+        })
+        return t
+    }
+
+    private fun itemSnapshotToTable(s: InventoryPeripheral.ItemSnapshot): LuaTable {
+        val o = LuaTable()
+        o.rawset("id", ValueFactory.valueOf(s.id))
+        o.rawset("count", ValueFactory.valueOf(s.count))
+        return o
+    }
+
+    /**
+     * WeakHashMap so once Lua collects a wrapped inventory table, we don't pin
+     * the underlying [InventoryPeripheral]. Per-eval state — [eval] runs with a
+     * fresh LuaState, so cross-eval pollution isn't a concern, but the weak
+     * reference still earns its keep against long scripts that wrap many invs.
+     */
+    private val invHandles: java.util.WeakHashMap<LuaTable, InventoryPeripheral> = java.util.WeakHashMap()
 
     /** Best-effort `tostring()` for arbitrary [LuaValue]s. Does not invoke `__tostring` metamethods. */
     private fun luaToString(v: LuaValue): String = when {
