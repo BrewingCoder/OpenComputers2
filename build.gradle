@@ -26,9 +26,9 @@ group = mod_group_id
 
 base.archivesName = mod_id
 
-// Mojang ships Java 25 to end users in 26.1, so mods should target Java 25.
-java.toolchain.languageVersion = JavaLanguageVersion.of(25)
-compileKotlin.compilerOptions.jvmTarget = JvmTarget.JVM_25
+// MC 1.21.1 targets Java 21 (was 25 for 26.1/1.21.10 — retargeted 2026-04-18)
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+compileKotlin.compilerOptions.jvmTarget = JvmTarget.JVM_21
 
 neoForge {
     version = project.neo_version
@@ -128,7 +128,7 @@ repositories {
 
 dependencies {
     // Must use the '-neoforge' version on NeoForge. If on regular Forge, omit the '-neoforge'
-    implementation 'thedarkcolour:kotlinforforge-neoforge:6.1.0a'
+    implementation 'thedarkcolour:kotlinforforge-neoforge:5.8.0'
 
     // Test stack — JUnit5 platform + Kotest assertions (cleaner than vanilla JUnit assertions).
     // See docs/11-engineering-rules.md — Rule A demands tests, Rule B demands testable seams.

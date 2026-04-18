@@ -1,8 +1,11 @@
 package com.brewingcoder.oc2.block
 
+import com.brewingcoder.oc2.client.ClientHandler
 import com.mojang.serialization.MapCodec
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
+import net.minecraft.world.InteractionResult
+import net.minecraft.world.entity.player.Player
 import net.minecraft.world.item.context.BlockPlaceContext
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.BaseEntityBlock
@@ -15,6 +18,7 @@ import net.minecraft.world.level.block.entity.BlockEntityTicker
 import net.minecraft.world.level.block.entity.BlockEntityType
 import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.block.state.StateDefinition
+import net.minecraft.world.phys.BlockHitResult
 
 /**
  * The Computer block. Spawns a [ComputerBlockEntity] when placed; ticks the BE
@@ -45,6 +49,24 @@ class ComputerBlock(properties: Properties) : BaseEntityBlock(properties) {
 
     override fun mirror(state: BlockState, mirror: Mirror): BlockState =
         state.rotate(mirror.getRotation(state.getValue(FACING)))
+
+    /**
+     * Right-click → open the Computer GUI. Server returns SUCCESS so the
+     * interaction is consumed; the client opens the screen via [ClientHandler]
+     * to keep client-only classes off the dedicated-server classpath.
+     */
+    override fun useWithoutItem(
+        state: BlockState,
+        level: Level,
+        pos: BlockPos,
+        player: Player,
+        hit: BlockHitResult,
+    ): InteractionResult {
+        if (level.isClientSide) {
+            ClientHandler.openComputerScreen(level, pos)
+        }
+        return InteractionResult.SUCCESS
+    }
 
     override fun newBlockEntity(pos: BlockPos, state: BlockState): BlockEntity =
         ComputerBlockEntity(pos, state)

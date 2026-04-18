@@ -5,10 +5,10 @@ import com.brewingcoder.oc2.platform.ChannelRegistrant
 import com.brewingcoder.oc2.platform.ChannelRegistry
 import com.brewingcoder.oc2.platform.Position
 import net.minecraft.core.BlockPos
+import net.minecraft.core.HolderLookup
+import net.minecraft.nbt.CompoundTag
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.state.BlockState
-import net.minecraft.world.level.storage.ValueInput
-import net.minecraft.world.level.storage.ValueOutput
 
 /**
  * Persistent state for a single Computer block.
@@ -76,14 +76,16 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
         setChanged()  // marks chunk dirty so NBT gets persisted
     }
 
-    override fun saveAdditional(output: ValueOutput) {
-        super.saveAdditional(output)
-        output.putString(NBT_CHANNEL, channelId)
+    override fun saveAdditional(tag: CompoundTag, registries: HolderLookup.Provider) {
+        super.saveAdditional(tag, registries)
+        tag.putString(NBT_CHANNEL, channelId)
     }
 
-    override fun loadAdditional(input: ValueInput) {
-        super.loadAdditional(input)
-        channelId = input.getStringOr(NBT_CHANNEL, DEFAULT_CHANNEL)
+    override fun loadAdditional(tag: CompoundTag, registries: HolderLookup.Provider) {
+        super.loadAdditional(tag, registries)
+        if (tag.contains(NBT_CHANNEL)) {
+            channelId = tag.getString(NBT_CHANNEL)
+        }
     }
 
     companion object {

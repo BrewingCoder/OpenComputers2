@@ -47,11 +47,45 @@ This is the most important and most counter-cultural rule. Common modern program
 - License to add code paths for hypothetical features we've ruled out (see [`08-never-list.md`](08-never-list.md)). Holograms are never coming, so we don't add a "renderer" abstraction layer to support them eventually.
 - License to over-design the user-facing scripting API. The platform internals are abstracted; the script-facing surface is small and direct.
 
+## Rule D — Core code never imports `net.minecraft.*`.
+
+OC2's "core" — the platform layer (channel registry, scheduler, VM hosts, driver SPI, database layer, scripting bindings) — never directly references Mojang's classes. Every dependency on Minecraft is mediated through a small port interface defined in `core/`, implemented in a per-version module under `mc-<version>/`.
+
+Today the project is single-module and we haven't formally executed the core/per-version split (see `docs/13-multiversion-plan.md`), but the rule applies *now* to keep us pre-positioned for the eventual split:
+
+**Files in these packages MUST NOT import `net.minecraft.*`:**
+- `com.brewingcoder.oc2.platform.*` — channel registry, position, registrants, scheduler
+- `com.brewingcoder.oc2.network.*` (the payload *contracts* — handlers may, contracts may not)
+- `com.brewingcoder.oc2.driver.api.*` (when added) — SPI interfaces
+- `com.brewingcoder.oc2.vm.*` (when added) — Lua/JS host abstractions
+- `com.brewingcoder.oc2.db.*` (when added)
+
+**Files in these packages MAY import `net.minecraft.*` (they ARE the per-version layer):**
+- `com.brewingcoder.oc2.block.*` — block / BE classes
+- `com.brewingcoder.oc2.client.*` — screens, renderers
+- `com.brewingcoder.oc2.item.*` — item registration
+- `com.brewingcoder.oc2.network.handlers.*` (when split out) — packet wire handlers
+
+### Why
+Two payoffs from one discipline:
+1. **Testability** (reinforces Rule A) — core code unit-testable without MC on the classpath, exactly what enabled the `ChannelRegistry` test refactor
+2. **Multi-version readiness** (sets up `docs/13-multiversion-plan.md`) — when we add MC 1.21.5 / 1.21.10 / future, only per-version modules need to change. Core code is shared verbatim.
+
+### How to apply
+- When adding a new file to a `platform/` or similar core package, before saving check that no MC imports were added. If MC types are unavoidable, the file probably belongs in a per-version package OR you need to introduce a new port type in core that the per-version layer implements.
+- When refactoring existing code: gradually push MC dependencies outward toward the per-version edge.
+- The **value-type pattern** (`Position` instead of `BlockPos` in core) is the canonical example. Translation happens at the boundary.
+
+### Stress test
+The retarget from MC 1.21.10 → 1.21.1 (2026-04-18): only 4 files changed, 2 of which were MC-touching (NBT signatures + BE constructor) and would naturally live in `mc-<version>/`. Core code (ChannelRegistry, Position, ChannelRegistrant, tests) didn't change at all. That's the value.
+
 ## Tension between rules
 
 Rule A says "test everything." Rule C says "abstract liberally." Together they create a healthy pressure: every abstraction introduced has to enable a test (otherwise it's gratuitous), and every untested code path justifies an abstraction effort. They're complementary, not opposed.
 
-If you find yourself adding an abstraction that doesn't help test anything AND doesn't enable a future feature we've planned for, that's the warning sign that you've crossed into Rule C's "what this is NOT" territory.
+Rule D adds a third axis: even when an abstraction enables a test (Rule A satisfied) AND aligns with planned features (Rule C satisfied), it must also keep MC outside core. The three rules together produce code that's testable, future-flexible, and version-portable — at the cost of some indirection.
+
+If you find yourself adding an abstraction that doesn't help test anything, doesn't enable a future feature we've planned for, AND doesn't isolate MC, that's the warning sign that you've crossed into Rule C's "what this is NOT" territory.
 
 ## Effect on commits
 

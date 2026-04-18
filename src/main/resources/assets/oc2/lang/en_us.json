@@ -1,4 +1,9 @@
 {
   "itemGroup.oc2.main": "OpenComputers2",
-  "block.oc2.computer": "Computer"
+  "block.oc2.computer": "Computer",
+
+  "screen.oc2.computer": "Computer",
+  "screen.oc2.computer.power": "Power",
+  "screen.oc2.computer.reset": "Reset",
+  "screen.oc2.computer.channel": "Wifi Channel"
 }

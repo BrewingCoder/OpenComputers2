@@ -19,6 +19,8 @@ object ModBlockEntities {
         DeferredRegister.create(Registries.BLOCK_ENTITY_TYPE, OpenComputers2.ID)
 
     val COMPUTER = REGISTRY.register("computer") { ->
-        BlockEntityType(::ComputerBlockEntity, ModBlocks.COMPUTER)
+        BlockEntityType.Builder
+            .of(::ComputerBlockEntity, ModBlocks.COMPUTER)
+            .build(null)
     }
 }
