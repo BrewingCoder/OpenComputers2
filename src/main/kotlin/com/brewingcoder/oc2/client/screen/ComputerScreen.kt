@@ -10,6 +10,7 @@ import net.minecraft.client.gui.components.ImageButton
 import net.minecraft.client.gui.components.WidgetSprites
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.network.chat.Component
+import net.minecraft.network.chat.Style
 import net.minecraft.resources.ResourceLocation
 import net.neoforged.neoforge.network.PacketDistributor
 import kotlin.math.max
@@ -161,14 +162,15 @@ class ComputerScreen(
         val labelY = channelBox.y + (channelBox.height - font.lineHeight) / 2
         graphics.drawString(font, labelText, labelX, labelY, COLOR_LABEL, false)
 
-        // Terminal lines, top-to-bottom, 1px padding
+        // Terminal text via our custom glyph-grid renderer (TerminalRenderer).
+        // Pixel-perfect 1:1 atlas blits — sharp at any GUI scale, no MC TTF
+        // rasterization fight. Atlas is baked JetBrains Mono at 6x10 cells.
         val tx = terminalRect.x + 6
         val ty = terminalRect.y + 6
-        terminalLines.forEachIndexed { i, line ->
-            val y = ty + i * (font.lineHeight + 2)
-            if (y + font.lineHeight > terminalRect.y + terminalRect.h - 4) return@forEachIndexed
-            graphics.drawString(font, line, tx, y, COLOR_TERMINAL_TEXT, false)
-        }
+        val maxRows = (terminalRect.h - 12) / (TERMINAL.cellH + 1)
+        val visible = if (terminalLines.size <= maxRows) terminalLines
+                      else terminalLines.subList(terminalLines.size - maxRows, terminalLines.size)
+        TERMINAL.drawLines(graphics, tx, ty, visible, COLOR_TERMINAL_TEXT)
 
         super.render(graphics, mouseX, mouseY, partialTick)
     }
@@ -183,6 +185,15 @@ class ComputerScreen(
     /** Don't pause the game when the GUI is open — we're a "casual interaction" UI. */
     override fun isPauseScreen(): Boolean = false
 
+    /**
+     * Don't blur the world behind us. Default Screen.renderBackground applies a
+     * blur + dim when opened in-game; we want a clean unmodified world view so
+     * the player can still see what's around them while operating the Computer.
+     */
+    override fun renderBackground(graphics: GuiGraphics, mouseX: Int, mouseY: Int, partialTick: Float) {
+        // intentionally empty — no blur, no dim
+    }
+
     private data class Rect(val x: Int, val y: Int, val w: Int, val h: Int)
 
     companion object {
@@ -191,6 +202,15 @@ class ComputerScreen(
         private const val ICON_SIZE = 20
         private const val CHANNEL_BOX_W = 140
         private const val MAX_TERMINAL_LINES = 256
+        /** Terminal text renderer — custom glyph-grid blit, Spleen 5x8 bitmap atlas.
+         *  Selected after evaluating Px437 (too retro/big), JBMono baked (mushy at small
+         *  PIL render), Cozette 6x13 (too big), Tom Thumb 4x6 (too blocky).
+         *  MSDF rendering for true vector-quality terminal text is deferred to R2/R3. */
+        private val TERMINAL = TerminalRenderer(
+            atlas = TerminalRenderer.DEFAULT_ATLAS,
+            cellW = 5,
+            cellH = 8,
+        )
 
         // CRT monitor color palette
         private const val COLOR_TERMINAL_BG = 0xFF000000.toInt()
