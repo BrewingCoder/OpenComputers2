@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "oc2:block/computer_side",
+    "north": "oc2:block/computer_front",
+    "south": "oc2:block/computer_back",
+    "east":  "oc2:block/computer_side",
+    "west":  "oc2:block/computer_side",
+    "up":    "oc2:block/computer_top",
+    "down":  "oc2:block/computer_top"
+  }
+}
