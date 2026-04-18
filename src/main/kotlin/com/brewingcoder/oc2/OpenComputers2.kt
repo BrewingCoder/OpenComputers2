@@ -20,7 +20,7 @@ import thedarkcolour.kotlinforforge.neoforge.forge.runForDist
  * See docs/ for full architecture and design.
  */
 @Mod(OpenComputers2.ID)
-@EventBusSubscriber
+@EventBusSubscriber(bus = EventBusSubscriber.Bus.MOD)
 object OpenComputers2 {
     const val ID = "oc2"
 

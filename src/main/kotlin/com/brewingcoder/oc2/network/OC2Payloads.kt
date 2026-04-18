@@ -12,12 +12,11 @@ import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent
  * lets us evolve packet shapes safely; bumping it requires older clients to
  * reconnect (acceptable for a mod under active dev).
  */
-@EventBusSubscriber(modid = OpenComputers2.ID)
+@EventBusSubscriber(modid = OpenComputers2.ID, bus = EventBusSubscriber.Bus.MOD)
 object OC2Payloads {
 
     private const val VERSION = "0"
 
-    @JvmStatic
     @SubscribeEvent
     fun register(event: RegisterPayloadHandlersEvent) {
         val registrar = event.registrar(OpenComputers2.ID).versioned(VERSION)

@@ -40,6 +40,18 @@ Real production Kotlin mod, mid-scale. Reference for blocks/items/recipes/regist
 
 Telegram bridge mod, recent (April 2026). Good for "what does idiomatic 2026 Kotlin+NF look like" in a small focused codebase.
 
+### JustDireThings — Direwolf20's active 1.21.1 + 26.1 reference mod
+**Repo:** https://github.com/Direwolf20-MC/JustDireThings
+**License:** MIT
+**Language:** Java (we translate Java→Kotlin reading)
+**Status:** very active, pushed daily, 66+ stars
+**Default branch:** `main` (1.21.1 / NeoForge 21.1.x)
+**Important branch:** `feature/26.1` — their MC 1.21.10 / NeoForge 26.1 migration in progress
+
+THE reference for current NeoForge 1.21.1 patterns: blocks/BEs, custom GUIs (their machines have rich UIs), networking, capabilities, data generation, build.gradle setup. Direwolf20 is the modpack author behind the FTB Direwolf20 packs and a major modded MC community figure.
+
+Crucially, the `feature/26.1` branch is exactly the multi-version migration we'll eventually do — they're a real-world reference for how to migrate a working 1.21.1 mod to 1.21.10. When OC2 hits that point, this branch is our crib source for the new GuiGraphicsExtractor patterns and other 1.21.10-specific changes.
+
 ### (Deferred) Cobblemon — heavyweight Kotlin reference
 **Repo:** https://gitlab.com/cable-mc/cobblemon (real dev location; GitHub mirror is sparse)
 **License:** MPL-2.0
