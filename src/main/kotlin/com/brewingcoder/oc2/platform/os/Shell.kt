@@ -1,5 +1,6 @@
 package com.brewingcoder.oc2.platform.os
 
+import com.brewingcoder.oc2.platform.network.NetworkAccess
 import com.brewingcoder.oc2.platform.peripheral.Peripheral
 import com.brewingcoder.oc2.platform.script.ScriptHost
 import com.brewingcoder.oc2.platform.script.ScriptRunHandle
@@ -73,6 +74,7 @@ class ShellSession(
     private val metadataProvider: () -> ShellMetadata,
     val peripheralFinder: (String) -> Peripheral? = { null },
     val peripheralLister: (String?) -> List<Peripheral> = { emptyList() },
+    val networkAccess: NetworkAccess = NetworkAccess.NOOP,
     val scriptRunner: ScriptRunner = ScriptRunner.SYNCHRONOUS,
 ) {
     var cwd: String = ""
@@ -98,6 +100,7 @@ interface ScriptRunner {
         cwd: String,
         peripheralFinder: (String) -> Peripheral?,
         peripheralLister: (String?) -> List<Peripheral>,
+        networkAccess: NetworkAccess = NetworkAccess.NOOP,
     ): StartResult
     fun current(): ScriptRunHandle?
     fun kill(): Boolean
@@ -115,8 +118,9 @@ interface ScriptRunner {
                 mount: WritableMount, cwd: String,
                 peripheralFinder: (String) -> Peripheral?,
                 peripheralLister: (String?) -> List<Peripheral>,
+                networkAccess: NetworkAccess,
             ): StartResult {
-                val h = ScriptRunHandle(0, chunkName, host, source, mount, cwd, peripheralFinder, peripheralLister)
+                val h = ScriptRunHandle(0, chunkName, host, source, mount, cwd, peripheralFinder, peripheralLister, networkAccess)
                 h.start()
                 while (!h.isDone()) Thread.sleep(1)
                 return StartResult.Started(h)
@@ -137,6 +141,7 @@ class ShellContext(
     val cwd: String get() = session.cwd
     val peripheralFinder: (String) -> Peripheral? get() = session.peripheralFinder
     val peripheralLister: (String?) -> List<Peripheral> get() = session.peripheralLister
+    val networkAccess: NetworkAccess get() = session.networkAccess
     val scriptRunner: ScriptRunner get() = session.scriptRunner
 
     fun setCwd(newCwd: String) { session.cwd = newCwd }

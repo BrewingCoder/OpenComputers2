@@ -219,6 +219,77 @@ while true do
 end
 ```
 
+## `network` — wifi messaging between computers
+
+Every computer has built-in wifi (no separate adapter block). Messages route by
+the computer's wifi channel (set via NBT or future `chan` shell command).
+Inboxes are **in-memory and restart-transient** — perfect for live coordination,
+not for persistence. If you need durable state, write it to `fs`.
+
+| Function | Returns | Notes |
+|---|---|---|
+| `network.id()` | int | this computer's id (matches `id` shell cmd) |
+| `network.send(msg)` | void | broadcast on **own** channel |
+| `network.send(msg, ch)` | void | send on a specific channel |
+| `network.recv()` | `{from, body}` or nil/null | pop oldest pending message |
+| `network.peek()` | `{from, body}` or nil/null | look without consuming |
+| `network.size()` | int | number of pending messages |
+
+Message body is a string; if you need structure, encode/decode JSON
+(see [`json`](#json--lua-only-js-has-built-in-json) below). Bounded per inbox
+(currently 32 messages, drop-oldest); per-message limit is 4 KiB UTF-8.
+
+Self-exclusion: `network.send` skips your own inbox. Two computers on the
+same channel get each other's broadcasts but never see their own.
+
+```lua
+network.send("hello world")          -- broadcast on own channel
+network.send("hi ops", "ops")        -- specific channel
+local m = network.recv()
+if m then print(m.from .. ": " .. m.body) end
+```
+
+```js
+network.send("hello world");
+network.send("hi ops", "ops");
+const m = network.recv();
+if (m) print(m.from + ": " + m.body);
+```
+
+## `json` — Lua only (JS has built-in JSON)
+
+Lua has no native JSON. OC2 ships a Gson-backed binding so Lua scripts can
+serialize tables for `network.send`.
+
+| Function | Returns | Notes |
+|---|---|---|
+| `json.encode(value)` | string | tables with int keys 1..n → arrays; otherwise objects |
+| `json.decode(text)` | LuaValue | objects → string-keyed tables; arrays → 1..n tables |
+
+Decode errors raise via `error(...)`; catch with `pcall`.
+
+```lua
+local payload = json.encode({ kind = "ping", ts = 42 })
+network.send(payload)
+
+local m = network.recv()
+if m then
+  local t = json.decode(m.body)
+  print(t.kind, t.ts)
+end
+```
+
+JS scripts use the standard `JSON` object — no OC2 binding needed.
+
+```js
+network.send(JSON.stringify({ kind: "ping", ts: 42 }));
+const m = network.recv();
+if (m) {
+  const t = JSON.parse(m.body);
+  print(t.kind, t.ts);
+}
+```
+
 ## Shell commands
 
 | Command | Notes |

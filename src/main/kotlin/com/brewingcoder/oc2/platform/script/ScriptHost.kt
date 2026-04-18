@@ -1,5 +1,6 @@
 package com.brewingcoder.oc2.platform.script
 
+import com.brewingcoder.oc2.platform.network.NetworkAccess
 import com.brewingcoder.oc2.platform.os.ShellOutput
 import com.brewingcoder.oc2.platform.peripheral.Peripheral
 import com.brewingcoder.oc2.platform.storage.WritableMount
@@ -43,6 +44,8 @@ interface ScriptEnv {
     fun findPeripheral(kind: String): Peripheral?
     /** All peripherals on the host's channel matching [kind], or all peripherals if [kind] is null. */
     fun listPeripherals(kind: String? = null): List<Peripheral> = emptyList()
+    /** Inbox + broadcast for `network.send/recv/peek/size/id`. Default is inert (tests). */
+    val network: NetworkAccess get() = NetworkAccess.NOOP
 }
 
 data class ScriptResult(

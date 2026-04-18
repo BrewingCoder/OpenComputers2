@@ -1,6 +1,7 @@
 package com.brewingcoder.oc2.storage
 
 import com.brewingcoder.oc2.OpenComputers2
+import com.brewingcoder.oc2.platform.network.NetworkInboxes
 import com.brewingcoder.oc2.platform.storage.StorageProvider
 import net.minecraft.server.MinecraftServer
 import net.minecraft.world.level.storage.LevelResource
@@ -66,6 +67,10 @@ object OC2ServerContext {
     fun onServerStopping(event: ServerStoppingEvent) {
         if (holder?.server === event.server) {
             holder = null
+            // Restart-transient by design — see NetworkInboxes class doc. Wiping
+            // here ensures a fresh world doesn't inherit messages from the prior
+            // session and that singleplayer→multiplayer transitions stay clean.
+            NetworkInboxes.clearAll()
             OpenComputers2.LOGGER.info("OC2 server context torn down")
         }
     }

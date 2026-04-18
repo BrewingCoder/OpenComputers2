@@ -345,7 +345,7 @@ class RunCommand(private val hostsByExt: Map<String, ScriptHost>) : ShellCommand
             return 1
         }
         val chunkName = MountPaths.name(target)
-        val startResult = ctx.scriptRunner.start(host, source, chunkName, ctx.mount, ctx.cwd, ctx.peripheralFinder, ctx.peripheralLister)
+        val startResult = ctx.scriptRunner.start(host, source, chunkName, ctx.mount, ctx.cwd, ctx.peripheralFinder, ctx.peripheralLister, ctx.networkAccess)
         return when (startResult) {
             is com.brewingcoder.oc2.platform.os.ScriptRunner.StartResult.Started -> {
                 ctx.out.println("started '${chunkName}' (pid=${startResult.handle.pid}). use `ps` / `kill` to manage.")

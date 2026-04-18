@@ -1,5 +1,6 @@
 package com.brewingcoder.oc2.block
 
+import com.brewingcoder.oc2.platform.network.NetworkAccess
 import com.brewingcoder.oc2.platform.os.ScriptRunner
 import com.brewingcoder.oc2.platform.peripheral.Peripheral
 import com.brewingcoder.oc2.platform.script.ScriptHost
@@ -28,13 +29,14 @@ class BeScriptRunner : ScriptRunner {
         cwd: String,
         peripheralFinder: (String) -> Peripheral?,
         peripheralLister: (String?) -> List<Peripheral>,
+        networkAccess: NetworkAccess,
     ): ScriptRunner.StartResult {
         val existing = handle
         if (existing != null && !existing.isDone()) {
             return ScriptRunner.StartResult.AlreadyRunning(existing)
         }
         val pid = NEXT_PID.getAndIncrement()
-        val h = ScriptRunHandle(pid, chunkName, host, source, mount, cwd, peripheralFinder, peripheralLister)
+        val h = ScriptRunHandle(pid, chunkName, host, source, mount, cwd, peripheralFinder, peripheralLister, networkAccess)
         h.start()
         handle = h
         return ScriptRunner.StartResult.Started(h)

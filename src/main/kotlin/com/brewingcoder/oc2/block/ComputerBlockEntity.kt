@@ -4,6 +4,8 @@ import com.brewingcoder.oc2.OpenComputers2
 import com.brewingcoder.oc2.platform.ChannelRegistrant
 import com.brewingcoder.oc2.platform.ChannelRegistry
 import com.brewingcoder.oc2.platform.Position
+import com.brewingcoder.oc2.platform.network.NetworkAccess
+import com.brewingcoder.oc2.platform.network.NetworkInboxes
 import com.brewingcoder.oc2.network.TerminalOutputPayload
 import com.brewingcoder.oc2.platform.os.Shell
 import com.brewingcoder.oc2.platform.os.ShellMetadata
@@ -221,6 +223,7 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
             },
             peripheralFinder = { kind -> findPeripheralOnChannel(kind) },
             peripheralLister = { kind -> listPeripheralsOnChannel(kind) },
+            networkAccess = networkAccess(),
             scriptRunner = scriptRunner,
         ).also { shellSession = it }
         return SHELL.execute(input, session)
@@ -243,6 +246,36 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
 
     private fun listPeripheralsOnChannel(kind: String?): List<Peripheral> =
         ChannelRegistry.listOnChannel(channelId, kind).mapNotNull { it as? Peripheral }
+
+    /**
+     * Broadcast [message] to every other [ComputerBlockEntity] on [channel] (or
+     * the host's own channel if null). Self-exclusion + unassigned-id filtering
+     * happens here so script callers don't need to know the rules.
+     */
+    fun networkSend(message: String, channel: String? = null) {
+        val targetChannel = channel ?: channelId
+        val senderId = ensureComputerId()
+        val msg = NetworkInboxes.Message(from = senderId, body = message)
+        for (r in ChannelRegistry.listOnChannel(targetChannel, kind = "computer")) {
+            val cbe = r as? ComputerBlockEntity ?: continue
+            if (cbe === this) continue
+            if (cbe.computerId == ID_UNASSIGNED) continue
+            NetworkInboxes.deliver(cbe.computerId, msg)
+        }
+    }
+
+    fun networkRecv(): NetworkInboxes.Message? = NetworkInboxes.pop(ensureComputerId())
+    fun networkPeek(): NetworkInboxes.Message? = NetworkInboxes.peek(ensureComputerId())
+    fun networkSize(): Int = NetworkInboxes.size(ensureComputerId())
+
+    /** [NetworkAccess] view backed by this BE — passed into the script env. */
+    private fun networkAccess(): NetworkAccess = object : NetworkAccess {
+        override fun id(): Int = ensureComputerId()
+        override fun send(message: String, channel: String?) = networkSend(message, channel)
+        override fun recv(): NetworkInboxes.Message? = networkRecv()
+        override fun peek(): NetworkInboxes.Message? = networkPeek()
+        override fun size(): Int = networkSize()
+    }
 
     /** Reassign the channel; updates the registry. */
     fun setChannel(newChannel: String) {

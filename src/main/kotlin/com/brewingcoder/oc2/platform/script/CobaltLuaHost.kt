@@ -47,6 +47,8 @@ class CobaltLuaHost : ScriptHost {
             globals.rawset("fs", makeFsTable(env.mount, env.cwd))
             globals.rawset("peripheral", makePeripheralTable(env))
             globals.rawset("colors", makeColorsTable())
+            globals.rawset("network", makeNetworkTable(env))
+            globals.rawset("json", makeJsonTable())
             globals.rawset("sleep", fn { args ->
                 val ms = args.arg(1).toDouble().toLong().coerceIn(0L, 60_000L)
                 if (ms > 0) Thread.sleep(ms)
@@ -179,6 +181,71 @@ class CobaltLuaHost : ScriptHost {
     private fun wrapPeripheral(p: com.brewingcoder.oc2.platform.peripheral.Peripheral): LuaValue = when (p) {
         is MonitorPeripheral -> wrapMonitor(p)
         else -> Constants.NIL
+    }
+
+    /**
+     * Build the `network` table:
+     *   `network.id()`            → host computer's id (int)
+     *   `network.send(msg [, ch])` → broadcast on channel (own channel if omitted)
+     *   `network.recv()`          → table {from, body} or nil
+     *   `network.peek()`          → table {from, body} or nil (does not consume)
+     *   `network.size()`          → pending message count (int)
+     */
+    private fun makeNetworkTable(env: ScriptEnv): LuaTable {
+        val t = LuaTable()
+        t.rawset("id", fn { ValueFactory.valueOf(env.network.id()) })
+        t.rawset("send", fn { args ->
+            val msg = args.arg(1).toString()
+            val ch = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toString() else null
+            env.network.send(msg, ch)
+            Constants.NIL
+        })
+        t.rawset("recv", fn {
+            val m = env.network.recv() ?: return@fn Constants.NIL
+            messageToTable(m)
+        })
+        t.rawset("peek", fn {
+            val m = env.network.peek() ?: return@fn Constants.NIL
+            messageToTable(m)
+        })
+        t.rawset("size", fn { ValueFactory.valueOf(env.network.size()) })
+        return t
+    }
+
+    private fun messageToTable(m: com.brewingcoder.oc2.platform.network.NetworkInboxes.Message): LuaTable {
+        val o = LuaTable()
+        o.rawset("from", ValueFactory.valueOf(m.from))
+        o.rawset("body", ValueFactory.valueOf(m.body))
+        return o
+    }
+
+    /**
+     * Build the `json` table — Gson-backed encode/decode. Lua scripts use this
+     * to serialize tables for `network.send`. JS scripts get the standard `JSON`
+     * object from Rhino instead.
+     *
+     * Conversion rules:
+     *   - Lua tables with integer keys 1..n → JSON arrays
+     *   - Lua tables otherwise              → JSON objects (string keys)
+     *   - nil / NIL                         → JSON null (encode); decode produces NIL
+     *   - numbers, booleans, strings        → corresponding JSON primitives
+     *
+     * Decode errors (malformed JSON) raise a Lua error so callers can `pcall`.
+     */
+    private fun makeJsonTable(): LuaTable {
+        val t = LuaTable()
+        t.rawset("encode", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs =
+                ValueFactory.valueOf(LuaJson.encode(args.arg(1)))
+        })
+        t.rawset("decode", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs = try {
+                LuaJson.decode(args.arg(1).toString())
+            } catch (e: Exception) {
+                throw LuaError("json decode: ${e.message ?: e::class.simpleName}")
+            }
+        })
+        return t
     }
 
     private fun makeColorsTable(): LuaTable {

@@ -1,5 +1,6 @@
 package com.brewingcoder.oc2.platform.script
 
+import com.brewingcoder.oc2.platform.network.NetworkAccess
 import com.brewingcoder.oc2.platform.os.ShellOutput
 import com.brewingcoder.oc2.platform.peripheral.Peripheral
 import com.brewingcoder.oc2.platform.storage.WritableMount
@@ -34,6 +35,7 @@ class ScriptRunHandle(
     private val cwd: String,
     private val peripheralFinder: (String) -> Peripheral?,
     private val peripheralLister: (String?) -> List<Peripheral> = { emptyList() },
+    private val networkAccess: NetworkAccess = NetworkAccess.NOOP,
 ) {
 
     private val outputQueue: ConcurrentLinkedQueue<OutputItem> = ConcurrentLinkedQueue()
@@ -109,5 +111,6 @@ class ScriptRunHandle(
         }
         override fun findPeripheral(kind: String): Peripheral? = peripheralFinder(kind)
         override fun listPeripherals(kind: String?): List<Peripheral> = peripheralLister(kind)
+        override val network: NetworkAccess = this@ScriptRunHandle.networkAccess
     }
 }

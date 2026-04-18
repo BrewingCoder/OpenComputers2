@@ -169,6 +169,9 @@ dependencies {
     testImplementation 'io.kotest:kotest-assertions-core:5.9.1'
     // SLF4J binding — production gets one via NeoForge, tests need their own
     testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.16'
+    // Gson is on the production classpath via NeoForge (MC bundles it). Tests run
+    // outside MC, so they need their own copy to exercise the json bindings.
+    testImplementation 'com.google.code.gson:gson:2.11.0'
 }
 
 repositories {

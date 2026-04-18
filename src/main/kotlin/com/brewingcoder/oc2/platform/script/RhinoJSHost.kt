@@ -47,6 +47,7 @@ class RhinoJSHost : ScriptHost {
             ScriptableObject.putProperty(scope, "fs", makeFsObject(env.mount, env.cwd, scope))
             ScriptableObject.putProperty(scope, "peripheral", makePeripheralObject(env, scope))
             ScriptableObject.putProperty(scope, "colors", makeColorsObject())
+            ScriptableObject.putProperty(scope, "network", makeNetworkObject(env, scope))
             ScriptableObject.putProperty(scope, "sleep", object : BaseFunction(scope, ScriptableObject.getFunctionPrototype(scope)) {
                 override fun call(cx2: Context, scope2: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any {
                     val ms = (args.getOrNull(0) as? Number)?.toLong()?.coerceIn(0L, 60_000L) ?: 0L
@@ -109,6 +110,39 @@ class RhinoJSHost : ScriptHost {
     private fun wrapAnyPeripheral(p: com.brewingcoder.oc2.platform.peripheral.Peripheral, parent: Scriptable): Any? = when (p) {
         is MonitorPeripheral -> wrapMonitor(p, parent)
         else -> null
+    }
+
+    /**
+     * Build the `network` JS object:
+     *   `network.id()`               → host computer's id (number)
+     *   `network.send(msg [, ch])`   → broadcast on channel (own channel if omitted)
+     *   `network.recv()`             → {from, body} or null
+     *   `network.peek()`             → {from, body} or null (does not consume)
+     *   `network.size()`             → pending message count (number)
+     */
+    private fun makeNetworkObject(env: ScriptEnv, parent: Scriptable): ScriptableObject {
+        val obj = NativeObject()
+        defineFsMethod(obj, "id", parent, 0) { _ -> env.network.id() }
+        defineFsMethod(obj, "send", parent, 2) { args ->
+            val msg = asString(args, 0)
+            val ch = if (args.size >= 2 && args[1] != null && args[1] !== Undefined.instance) asString(args, 1) else null
+            env.network.send(msg, ch); Undefined.instance
+        }
+        defineFsMethod(obj, "recv", parent, 0) { _ ->
+            env.network.recv()?.let { messageToJsObject(it) }
+        }
+        defineFsMethod(obj, "peek", parent, 0) { _ ->
+            env.network.peek()?.let { messageToJsObject(it) }
+        }
+        defineFsMethod(obj, "size", parent, 0) { _ -> env.network.size() }
+        return obj
+    }
+
+    private fun messageToJsObject(m: com.brewingcoder.oc2.platform.network.NetworkInboxes.Message): ScriptableObject {
+        val o = NativeObject()
+        ScriptableObject.putProperty(o, "from", m.from)
+        ScriptableObject.putProperty(o, "body", m.body)
+        return o
     }
 
     private fun wrapMonitor(mon: MonitorPeripheral, parent: Scriptable): ScriptableObject {
