@@ -20,4 +20,8 @@ object ModItems {
     val COMPUTER_HOLDER: DeferredItem<BlockItem> =
         REGISTRY.registerSimpleBlockItem(ModBlocks.COMPUTER_HOLDER)
     val COMPUTER: Item by COMPUTER_HOLDER
+
+    val MONITOR_HOLDER: DeferredItem<BlockItem> =
+        REGISTRY.registerSimpleBlockItem(ModBlocks.MONITOR_HOLDER)
+    val MONITOR: Item by MONITOR_HOLDER
 }

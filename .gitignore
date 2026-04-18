@@ -25,3 +25,7 @@ runs
 run-data
 
 repo
+
+# macOS
+.DS_Store
+**/.DS_Store

@@ -2,11 +2,14 @@ package com.brewingcoder.oc2
 
 import com.brewingcoder.oc2.block.ModBlockEntities
 import com.brewingcoder.oc2.block.ModBlocks
+import com.brewingcoder.oc2.client.OC2ClientConfig
 import com.brewingcoder.oc2.item.ModItems
 import com.brewingcoder.oc2.item.ModTabs
 import net.neoforged.bus.api.SubscribeEvent
+import net.neoforged.fml.ModList
 import net.neoforged.fml.common.EventBusSubscriber
 import net.neoforged.fml.common.Mod
+import net.neoforged.fml.config.ModConfig
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent
 import net.neoforged.fml.event.lifecycle.FMLDedicatedServerSetupEvent
@@ -33,6 +36,13 @@ object OpenComputers2 {
         ModBlockEntities.REGISTRY.register(MOD_BUS)
         ModItems.REGISTRY.register(MOD_BUS)
         ModTabs.REGISTRY.register(MOD_BUS)
+
+        // Register the client config — backing toml lives at config/oc2-client.toml
+        // and players can edit values without rebuilding the mod.
+        ModList.get().getModContainerById(ID).orElseThrow().registerConfig(
+            ModConfig.Type.CLIENT,
+            OC2ClientConfig.SPEC,
+        )
 
         runForDist(
             clientTarget = { MOD_BUS.addListener(::onClientSetup) },

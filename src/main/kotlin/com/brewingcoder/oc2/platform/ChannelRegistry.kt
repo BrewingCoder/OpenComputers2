@@ -54,6 +54,17 @@ object ChannelRegistry {
     fun membersOf(channelId: String): Set<ChannelRegistrant> =
         byChannel[channelId]?.toSet() ?: emptySet()
 
+    /**
+     * Find the first registrant on [channelId] of [kind]. Returns null if no
+     * match. Used by `peripheral.find(kind)` script API.
+     *
+     * For v0 returns the first match in iteration order — fine when there's
+     * one device per kind per channel. When multiple are expected (e.g. a fleet
+     * of identical drones), use [membersOf] and filter manually.
+     */
+    fun findOnChannel(channelId: String, kind: String): ChannelRegistrant? =
+        byChannel[channelId]?.firstOrNull { it.kind == kind }
+
     /** Snapshot of all known channels with at least one registrant. */
     fun activeChannels(): Set<String> = byChannel.keys.toSet()
 

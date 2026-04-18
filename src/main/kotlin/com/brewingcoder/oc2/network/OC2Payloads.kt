@@ -26,5 +26,17 @@ object OC2Payloads {
             SetChannelPayload.STREAM_CODEC,
             SetChannelPayload.Companion::handle,
         )
+
+        registrar.playToServer(
+            RunCommandPayload.TYPE,
+            RunCommandPayload.STREAM_CODEC,
+            RunCommandPayload.Companion::handle,
+        )
+
+        registrar.playToClient(
+            TerminalOutputPayload.TYPE,
+            TerminalOutputPayload.STREAM_CODEC,
+            TerminalOutputPayload.Companion::handle,
+        )
     }
 }

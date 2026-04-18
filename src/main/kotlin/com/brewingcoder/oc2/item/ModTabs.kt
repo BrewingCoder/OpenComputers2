@@ -26,6 +26,7 @@ object ModTabs {
             .displayItems { _, output ->
                 // every player-facing item OC2 ships goes here
                 output.accept(ModItems.COMPUTER)
+                output.accept(ModItems.MONITOR)
             }
             .build()
     }

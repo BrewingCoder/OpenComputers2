@@ -87,3 +87,46 @@ The Rule A audit on server-only registration logic in `ComputerBlockEntity.regis
 
 ### Position math edge cases
 `Position.distanceSqTo` and `isWithin` are tested implicitly by future range-check code, but should have direct tests added when range-aware adapter logic lands.
+
+### Terminal: clipboard paste support
+The `ComputerScreen` accepts `charTyped` one keystroke at a time but doesn't handle Ctrl-V/Cmd-V pastes. Hard blocker for typing real Lua scripts in-game (workaround during R1: write files via host FS, then `run`). Implement by overriding `keyPressed` to detect `KEY_V` + `Screen.hasControlDown()` (Win/Linux) or `Screen.hasShiftDown()`+meta on macOS, calling `Minecraft.getInstance().keyboardHandler.clipboard`, splitting on newlines into the buffer. Likely also want Ctrl-C / Cmd-C to copy current input.
+
+### Terminal: command history (up/down arrow)
+Bash-style. Persist last N commands per-session (in-memory at first; later: ROM `.history` file). Arrow keys cycle. Prerequisite for any non-trivial in-terminal scripting.
+
+### Terminal: scrollback / PageUp-PageDown
+Currently caps at 256 lines and oldest drops off. Real shells need a scroll buffer with PageUp/PageDown navigation. Scope creep until the terminal becomes a daily-driver UI; defer to R1 week 4 polish.
+
+---
+
+## Cooperative scheduling (R2 — Option B from the "How CC:T does it" conversation, 2026-04-18)
+
+**Status:** Option A (worker thread + blocking sleep) lands in R1. Option B is the proper CC:T-style coroutine + event-queue model — deferred to R2.
+
+### What R2 needs to add on top of R1
+
+**1. Coroutine-driven script execution.** Each script runs as a Lua coroutine (Cobalt) / Rhino continuation. Custom yielding primitives:
+- `os.pullEvent(filter?)` — yields until next event matching filter
+- `os.startTimer(seconds)` — schedules a `timer` event
+- `os.queueEvent(name, ...)` — synthetic event from script
+
+**2. Per-computer event queue.** Thread-safe queue of `Event(name, args)`. Populated by:
+- MC tick scheduler (timer events firing)
+- Monitor touches (becomes `monitor_touch` events instead of polled)
+- Redstone changes (when adapters land)
+- Any peripheral-emitted event (charger insert/remove, network packet rx, etc.)
+
+**3. Coroutine runtime loop.** Worker thread:
+- Resumes coroutine with current event (or initial nil)
+- Coroutine runs to next yield (e.g. `os.pullEvent`)
+- Worker parks until next event arrives in queue, or timer fires
+
+**4. CC:Tweaked compatibility.** Should support porting reactor monitor / quartermaster-style scripts with minor syntax tweaks. Match CC:T's event names where reasonable.
+
+### Why deferred
+
+R1's blocking-sleep model unblocks 90% of useful scripts in ~1 day. The full coroutine path is 2-3 days of careful threading + testing. Better to ship A early and iterate based on real-script feedback before committing to the coroutine model.
+
+### When to act
+
+When CC:T-script ports are the next-most-requested feature, OR when a player writes a real-time dashboard that runs into the 50ms-tick latency of A's marshaling model.

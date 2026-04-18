@@ -1,6 +1,7 @@
 {
   "itemGroup.oc2.main": "OpenComputers2",
   "block.oc2.computer": "Computer",
+  "block.oc2.monitor": "Monitor",
 
   "screen.oc2.computer": "Computer",
   "screen.oc2.computer.power": "Power",

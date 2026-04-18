@@ -56,6 +56,17 @@ neoForge {
             // You can set various levels here.
             // Please read: https://stackoverflow.com/questions/2031163/when-to-use-the-different-log-levels
             logLevel = org.slf4j.event.Level.DEBUG
+
+            // Make Cobalt + Rhino visible to the dev-mode classloader. In production the
+            // jarJar declarations handle this; in dev the FML transforming classloader needs
+            // an explicit nudge. Uses the per-run `additionalRuntimeClasspathConfiguration`
+            // exposed by moddev's RunModel.
+            additionalRuntimeClasspathConfiguration.dependencies.add(
+                project.dependencies.create('cc.tweaked:cobalt:0.9.5')
+            )
+            additionalRuntimeClasspathConfiguration.dependencies.add(
+                project.dependencies.create('org.mozilla:rhino:1.7.15')
+            )
         }
 
         client {
@@ -122,11 +133,33 @@ repositories {
         url = 'https://thedarkcolour.github.io/KotlinForForge/'
         content { includeGroup "thedarkcolour" }
     }
+    // CC:Tweaked maven — hosts the actively-maintained Cobalt Lua VM fork
+    maven {
+        name = 'SquidDev (CC:Tweaked)'
+        url = 'https://maven.squiddev.cc'
+        content { includeGroup "cc.tweaked" }
+    }
 }
 
 dependencies {
     // Must use the '-neoforge' version on NeoForge. If on regular Forge, omit the '-neoforge'
     implementation 'thedarkcolour:kotlinforforge-neoforge:5.5.0'
+
+    // Cobalt — Lua 5.2 VM, MIT, pure JVM. CC:Tweaked's fork is the actively-maintained line
+    // (the org.squiddev one stopped at 0.7.4 in 2020). Two declarations needed:
+    //   1. jarJar(...) embeds it in the production mod jar (NeoForge extracts at runtime)
+    //   2. additionalRuntimeClasspath puts it on the FML transforming classloader for dev
+    //      runs (jarJar isn't extracted in `runClient` because the dev launch uses source
+    //      classes, not the assembled jar)
+    jarJar(implementation('cc.tweaked:cobalt')) {
+        version { strictly '[0.9.5,0.10)'; prefer '0.9.5' }
+    }
+
+    // Rhino — Mozilla's JavaScript engine, MPL-2.0, pure JVM. Same dual declaration
+    // pattern as Cobalt for the same reason.
+    jarJar(implementation('org.mozilla:rhino')) {
+        version { strictly '[1.7.15,1.8)'; prefer '1.7.15' }
+    }
 
     // Test stack — JUnit5 platform + Kotest assertions (cleaner than vanilla JUnit assertions).
     // See docs/11-engineering-rules.md — Rule A demands tests, Rule B demands testable seams.

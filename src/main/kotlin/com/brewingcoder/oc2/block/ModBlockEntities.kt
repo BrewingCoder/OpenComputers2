@@ -23,4 +23,10 @@ object ModBlockEntities {
             .of(::ComputerBlockEntity, ModBlocks.COMPUTER)
             .build(null)
     }
+
+    val MONITOR = REGISTRY.register("monitor") { ->
+        BlockEntityType.Builder
+            .of(::MonitorBlockEntity, ModBlocks.MONITOR)
+            .build(null)
+    }
 }

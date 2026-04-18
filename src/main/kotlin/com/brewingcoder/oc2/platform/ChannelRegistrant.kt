@@ -25,4 +25,12 @@ interface ChannelRegistrant {
 
     /** World location, for diagnostics and (future) range computation. */
     val location: Position
+
+    /**
+     * Stable kind identifier — `"computer"`, `"monitor"`, etc. Used by
+     * [ChannelRegistry.findOnChannel] to filter peripheral lookups. Default
+     * is `"computer"` for backward compat with the original Computer-only
+     * registrants; new registrants should override.
+     */
+    val kind: String get() = "computer"
 }

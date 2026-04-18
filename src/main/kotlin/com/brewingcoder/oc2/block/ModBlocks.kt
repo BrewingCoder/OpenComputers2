@@ -26,4 +26,13 @@ object ModBlocks {
             .lightLevel { 6 }
     )
     val COMPUTER: ComputerBlock by COMPUTER_HOLDER
+
+    val MONITOR_HOLDER: DeferredBlock<MonitorBlock> = REGISTRY.registerBlock(
+        "monitor",
+        { props -> MonitorBlock(props) },
+        BlockBehaviour.Properties.of()
+            .strength(2.0f)
+            .lightLevel { 4 }
+    )
+    val MONITOR: MonitorBlock by MONITOR_HOLDER
 }
