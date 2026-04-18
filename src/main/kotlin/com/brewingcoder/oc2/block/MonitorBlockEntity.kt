@@ -271,6 +271,10 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         forMaster { master -> master.totalCols to master.totalRows } ?: (0 to 0)
     }
 
+    override fun getCursorPos(): Pair<Int, Int> = onServerThread {
+        forMaster { master -> master.cursorCol to master.cursorRow } ?: (0 to 0)
+    }
+
     override fun setForegroundColor(color: Int) = onServerThread {
         forMaster { master -> master.currentFg = color }
         Unit

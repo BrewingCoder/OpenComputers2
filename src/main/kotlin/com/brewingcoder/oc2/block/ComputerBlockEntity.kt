@@ -220,6 +220,7 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
                 )
             },
             peripheralFinder = { kind -> findPeripheralOnChannel(kind) },
+            peripheralLister = { kind -> listPeripheralsOnChannel(kind) },
             scriptRunner = scriptRunner,
         ).also { shellSession = it }
         return SHELL.execute(input, session)
@@ -239,6 +240,9 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
         val match = ChannelRegistry.findOnChannel(channelId, kind) ?: return null
         return match as? Peripheral
     }
+
+    private fun listPeripheralsOnChannel(kind: String?): List<Peripheral> =
+        ChannelRegistry.listOnChannel(channelId, kind).mapNotNull { it as? Peripheral }
 
     /** Reassign the channel; updates the registry. */
     fun setChannel(newChannel: String) {

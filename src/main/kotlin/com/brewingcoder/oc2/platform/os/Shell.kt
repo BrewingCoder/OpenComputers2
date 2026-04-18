@@ -72,6 +72,7 @@ class ShellSession(
     val mount: WritableMount,
     private val metadataProvider: () -> ShellMetadata,
     val peripheralFinder: (String) -> Peripheral? = { null },
+    val peripheralLister: (String?) -> List<Peripheral> = { emptyList() },
     val scriptRunner: ScriptRunner = ScriptRunner.SYNCHRONOUS,
 ) {
     var cwd: String = ""
@@ -89,7 +90,15 @@ class ShellSession(
  *   - [kill] aborts the current run; no-op if none
  */
 interface ScriptRunner {
-    fun start(host: ScriptHost, source: String, chunkName: String, mount: WritableMount, cwd: String, peripheralFinder: (String) -> Peripheral?): StartResult
+    fun start(
+        host: ScriptHost,
+        source: String,
+        chunkName: String,
+        mount: WritableMount,
+        cwd: String,
+        peripheralFinder: (String) -> Peripheral?,
+        peripheralLister: (String?) -> List<Peripheral>,
+    ): StartResult
     fun current(): ScriptRunHandle?
     fun kill(): Boolean
 
@@ -101,10 +110,14 @@ interface ScriptRunner {
     companion object {
         /** Synchronous fallback for tests — runs the script inline, returns the completed handle. */
         val SYNCHRONOUS: ScriptRunner = object : ScriptRunner {
-            override fun start(host: ScriptHost, source: String, chunkName: String, mount: WritableMount, cwd: String, peripheralFinder: (String) -> Peripheral?): StartResult {
-                val h = ScriptRunHandle(0, chunkName, host, source, mount, cwd, peripheralFinder)
+            override fun start(
+                host: ScriptHost, source: String, chunkName: String,
+                mount: WritableMount, cwd: String,
+                peripheralFinder: (String) -> Peripheral?,
+                peripheralLister: (String?) -> List<Peripheral>,
+            ): StartResult {
+                val h = ScriptRunHandle(0, chunkName, host, source, mount, cwd, peripheralFinder, peripheralLister)
                 h.start()
-                // Synchronous: wait for completion before returning.
                 while (!h.isDone()) Thread.sleep(1)
                 return StartResult.Started(h)
             }
@@ -123,6 +136,7 @@ class ShellContext(
     val metadata: ShellMetadata get() = session.metadata
     val cwd: String get() = session.cwd
     val peripheralFinder: (String) -> Peripheral? get() = session.peripheralFinder
+    val peripheralLister: (String?) -> List<Peripheral> get() = session.peripheralLister
     val scriptRunner: ScriptRunner get() = session.scriptRunner
 
     fun setCwd(newCwd: String) { session.cwd = newCwd }

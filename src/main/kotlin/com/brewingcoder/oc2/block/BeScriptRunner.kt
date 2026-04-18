@@ -27,13 +27,14 @@ class BeScriptRunner : ScriptRunner {
         mount: WritableMount,
         cwd: String,
         peripheralFinder: (String) -> Peripheral?,
+        peripheralLister: (String?) -> List<Peripheral>,
     ): ScriptRunner.StartResult {
         val existing = handle
         if (existing != null && !existing.isDone()) {
             return ScriptRunner.StartResult.AlreadyRunning(existing)
         }
         val pid = NEXT_PID.getAndIncrement()
-        val h = ScriptRunHandle(pid, chunkName, host, source, mount, cwd, peripheralFinder)
+        val h = ScriptRunHandle(pid, chunkName, host, source, mount, cwd, peripheralFinder, peripheralLister)
         h.start()
         handle = h
         return ScriptRunner.StartResult.Started(h)

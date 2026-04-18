@@ -280,6 +280,7 @@ class CobaltLuaHostTest {
         override fun setCursorPos(col: Int, row: Int) { log.add("setCursorPos($col,$row)") }
         override fun clear() { log.add("clear()") }
         override fun getSize(): Pair<Int, Int> = cols to rows
+        override fun getCursorPos(): Pair<Int, Int> = 0 to 0
         override fun setForegroundColor(color: Int) { log.add("setFg(${"%08X".format(color)})") }
         override fun setBackgroundColor(color: Int) { log.add("setBg(${"%08X".format(color)})") }
         override fun pollTouches(): List<com.brewingcoder.oc2.platform.peripheral.MonitorPeripheral.TouchEvent> = emptyList()

@@ -46,8 +46,7 @@ class RhinoJSHost : ScriptHost {
             ScriptableObject.putProperty(scope, "print", makePrintFunction(env.out, scope))
             ScriptableObject.putProperty(scope, "fs", makeFsObject(env.mount, env.cwd, scope))
             ScriptableObject.putProperty(scope, "peripheral", makePeripheralObject(env, scope))
-            // sleep(ms) — same caveat as Lua: blocks the server thread for the duration.
-            // Bounded by [0, 60s] to limit damage from runaway scripts.
+            ScriptableObject.putProperty(scope, "colors", makeColorsObject())
             ScriptableObject.putProperty(scope, "sleep", object : BaseFunction(scope, ScriptableObject.getFunctionPrototype(scope)) {
                 override fun call(cx2: Context, scope2: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any {
                     val ms = (args.getOrNull(0) as? Number)?.toLong()?.coerceIn(0L, 60_000L) ?: 0L
@@ -58,68 +57,95 @@ class RhinoJSHost : ScriptHost {
             cx.evaluateString(scope, source, chunkName, 1, null)
             ScriptResult(ok = true, errorMessage = null)
         } catch (e: JavaScriptException) {
-            ScriptResult(ok = false, errorMessage = "js error: ${e.message}")
+            ScriptResult(ok = false, errorMessage = cleanError(e.message))
         } catch (e: RhinoException) {
-            ScriptResult(ok = false, errorMessage = "js error: ${e.message}")
+            ScriptResult(ok = false, errorMessage = cleanError(e.message))
         } catch (e: StorageException) {
-            // a fs.* call leaked an exception (shouldn't happen — wrapper translates)
             ScriptResult(ok = false, errorMessage = "fs error: ${e.message}")
         } finally {
             Context.exit()
         }
     }
 
+    private fun cleanError(raw: String?): String {
+        val msg = raw ?: "unknown"
+        val cleaned = msg.replace(Regex("""java\.lang\.\w+(?:\.\w+)*:\s*"""), "")
+        return "js error: $cleaned"
+    }
+
+    private fun makeColorsObject(): ScriptableObject {
+        val obj = NativeObject()
+        for ((name, value) in ScriptColors.PALETTE) {
+            ScriptableObject.putProperty(obj, name, value.toLong() and 0xFFFFFFFFL)
+        }
+        return obj
+    }
+
     /**
-     * Build the `peripheral` JS object: `peripheral.find(kind)` returns either
-     * a JS object with monitor methods, or `null`. Mirrors [CobaltLuaHost]'s
-     * Lua implementation so cross-language scripts behave identically.
+     * Build the `peripheral` JS object:
+     *   `peripheral.find(kind)` → handle or null
+     *   `peripheral.list([kind])` → array of handles
      */
     private fun makePeripheralObject(env: ScriptEnv, parent: Scriptable): ScriptableObject {
         val obj = NativeObject()
         defineFsMethod(obj, "find", parent, 1) { args ->
             val kind = asString(args, 0)
             val p = env.findPeripheral(kind) ?: return@defineFsMethod null
-            when (p) {
-                is MonitorPeripheral -> wrapMonitor(p, parent)
-                else -> null
+            wrapAnyPeripheral(p, parent)
+        }
+        defineFsMethod(obj, "list", parent, 1) { args ->
+            val kind = if (args.isNotEmpty() && args[0] != null && args[0] !== Undefined.instance) asString(args, 0) else null
+            val matches = env.listPeripherals(kind)
+            val arr = cx().newArray(parent, matches.size)
+            for ((i, p) in matches.withIndex()) {
+                val wrapped = wrapAnyPeripheral(p, parent) ?: continue
+                arr.put(i, arr, wrapped)
             }
+            arr
         }
         return obj
+    }
+
+    private fun wrapAnyPeripheral(p: com.brewingcoder.oc2.platform.peripheral.Peripheral, parent: Scriptable): Any? = when (p) {
+        is MonitorPeripheral -> wrapMonitor(p, parent)
+        else -> null
     }
 
     private fun wrapMonitor(mon: MonitorPeripheral, parent: Scriptable): ScriptableObject {
         val obj = NativeObject()
         ScriptableObject.putProperty(obj, "kind", mon.kind)
         defineFsMethod(obj, "write", parent, 1) { args ->
-            mon.write(asString(args, 0))
-            Undefined.instance
+            mon.write(asString(args, 0)); Undefined.instance
+        }
+        defineFsMethod(obj, "println", parent, 1) { args ->
+            mon.println(asString(args, 0)); Undefined.instance
         }
         defineFsMethod(obj, "setCursorPos", parent, 2) { args ->
             val col = (args.getOrNull(0) as? Number)?.toInt() ?: 0
             val row = (args.getOrNull(1) as? Number)?.toInt() ?: 0
-            mon.setCursorPos(col, row)
-            Undefined.instance
+            mon.setCursorPos(col, row); Undefined.instance
+        }
+        defineFsMethod(obj, "getCursorPos", parent, 0) { _ ->
+            val (col, row) = mon.getCursorPos()
+            cx().newArray(parent, arrayOf<Any?>(col, row))
         }
         defineFsMethod(obj, "clear", parent, 0) { _ ->
-            mon.clear()
-            Undefined.instance
+            mon.clear(); Undefined.instance
         }
         defineFsMethod(obj, "getSize", parent, 0) { _ ->
             val (cols, rows) = mon.getSize()
-            // Return as a 2-element array: `var [w, h] = mon.getSize()`
             cx().newArray(parent, arrayOf<Any?>(cols, rows))
         }
-        defineFsMethod(obj, "setForegroundColor", parent, 1) { args ->
-            // JS numbers come through as Double; toLong().toInt() preserves the high alpha bit
-            // for ARGB values like 0xFFD4D4D4 that overflow int range as doubles.
+        // setForegroundColor + CC:T-aligned alias setTextColor
+        val setFg: (Array<out Any?>) -> Any? = { args ->
             val color = (args.getOrNull(0) as? Number)?.toLong()?.toInt() ?: 0
-            mon.setForegroundColor(color)
-            Undefined.instance
+            mon.setForegroundColor(color); Undefined.instance
         }
+        defineFsMethod(obj, "setForegroundColor", parent, 1, setFg)
+        defineFsMethod(obj, "setTextColor", parent, 1, setFg)
         defineFsMethod(obj, "setBackgroundColor", parent, 1) { args ->
             val color = (args.getOrNull(0) as? Number)?.toLong()?.toInt() ?: 0
-            mon.setBackgroundColor(color)
-            Undefined.instance
+            mon.setBackgroundColor(color); Undefined.instance
         }
         defineFsMethod(obj, "pollTouches", parent, 0) { _ ->
             val events = mon.pollTouches()
@@ -187,6 +213,9 @@ class RhinoJSHost : ScriptHost {
         }
         defineFsMethod(obj, "capacity", parent, 0) { _ -> ScriptFsOps.capacity(mount).toDouble() }
         defineFsMethod(obj, "free", parent, 0) { _ -> ScriptFsOps.free(mount).toDouble() }
+        defineFsMethod(obj, "combine", parent, 2) { args -> ScriptFsOps.combine(asString(args, 0), asString(args, 1)) }
+        defineFsMethod(obj, "getName", parent, 1) { args -> ScriptFsOps.getName(asString(args, 0)) }
+        defineFsMethod(obj, "getDir", parent, 1) { args -> ScriptFsOps.getDir(asString(args, 0)) }
         return obj
     }
 

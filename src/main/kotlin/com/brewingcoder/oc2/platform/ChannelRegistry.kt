@@ -65,6 +65,12 @@ object ChannelRegistry {
     fun findOnChannel(channelId: String, kind: String): ChannelRegistrant? =
         byChannel[channelId]?.firstOrNull { it.kind == kind }
 
+    /** All registrants on [channelId] of [kind] (or all if kind is null). */
+    fun listOnChannel(channelId: String, kind: String? = null): List<ChannelRegistrant> {
+        val all = byChannel[channelId]?.toList() ?: return emptyList()
+        return if (kind == null) all else all.filter { it.kind == kind }
+    }
+
     /** Snapshot of all known channels with at least one registrant. */
     fun activeChannels(): Set<String> = byChannel.keys.toSet()
 

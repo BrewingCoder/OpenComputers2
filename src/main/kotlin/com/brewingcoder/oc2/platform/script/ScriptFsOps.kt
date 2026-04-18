@@ -101,6 +101,13 @@ object ScriptFsOps {
     fun capacity(mount: WritableMount): Long = mount.capacity()
     fun free(mount: WritableMount): Long = mount.remainingSpace()
 
-    /** Normalize the name portion of a resolved path — used by `fs.name(path)` if we add it later. */
-    fun basename(path: String): String = MountPaths.name(path)
+    /** Last segment of a path. `fs.combine("foo/bar/baz") → "baz"`. */
+    fun getName(path: String): String = MountPaths.name(MountPaths.normalize(path))
+
+    /** Parent directory of a path, or `""` for top-level entries. */
+    fun getDir(path: String): String = MountPaths.parent(MountPaths.normalize(path))
+
+    /** Concatenate two path fragments and normalize. Handles dup `/` and dotdot. */
+    fun combine(a: String, b: String): String =
+        MountPaths.normalize(if (a.isEmpty()) b else if (b.isEmpty()) a else "$a/$b")
 }

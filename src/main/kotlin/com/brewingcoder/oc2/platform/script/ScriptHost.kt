@@ -41,6 +41,8 @@ interface ScriptEnv {
     val out: ShellOutput
     /** `kind`: e.g. `"monitor"`. Returns null if no peripheral of that kind is on the host's channel. */
     fun findPeripheral(kind: String): Peripheral?
+    /** All peripherals on the host's channel matching [kind], or all peripherals if [kind] is null. */
+    fun listPeripherals(kind: String? = null): List<Peripheral> = emptyList()
 }
 
 data class ScriptResult(

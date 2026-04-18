@@ -46,9 +46,7 @@ class CobaltLuaHost : ScriptHost {
             globals.rawset("print", makePrintFunction(env.out))
             globals.rawset("fs", makeFsTable(env.mount, env.cwd))
             globals.rawset("peripheral", makePeripheralTable(env))
-            // sleep(ms): synchronous Thread.sleep — BLOCKS the server thread.
-            // Acceptable for v0 demos; proper cooperative scheduling lands in R1+.
-            // See followups doc.
+            globals.rawset("colors", makeColorsTable())
             globals.rawset("sleep", fn { args ->
                 val ms = args.arg(1).toDouble().toLong().coerceIn(0L, 60_000L)
                 if (ms > 0) Thread.sleep(ms)
@@ -59,10 +57,19 @@ class CobaltLuaHost : ScriptHost {
             LuaThread.runMain(state, chunk)
             ScriptResult(ok = true, errorMessage = null)
         } catch (e: CompileException) {
-            ScriptResult(ok = false, errorMessage = "compile error: ${e.message}")
+            ScriptResult(ok = false, errorMessage = cleanError("compile error", e.message))
         } catch (e: LuaError) {
-            ScriptResult(ok = false, errorMessage = "lua error: ${e.message}")
+            ScriptResult(ok = false, errorMessage = cleanError("lua error", e.message))
         }
+    }
+
+    /** Strip Java-internals noise (java.lang.X, fully-qualified InterruptedException etc). */
+    private fun cleanError(prefix: String, raw: String?): String {
+        val msg = raw ?: "unknown"
+        // Strip java.lang.* class names from messages: "java.lang.InterruptedException: foo" → "foo"
+        val cleaned = msg.replace(Regex("""java\.lang\.\w+(?:\.\w+)*:\s*"""), "")
+            .replace(Regex("""vm error:\s*"""), "")
+        return "$prefix: $cleaned"
     }
 
     private fun makePrintFunction(out: ShellOutput): VarArgFunction = object : VarArgFunction() {
@@ -121,6 +128,16 @@ class CobaltLuaHost : ScriptHost {
         })
         t.rawset("capacity", fn { ValueFactory.valueOf(ScriptFsOps.capacity(mount).toDouble()) })
         t.rawset("free", fn { ValueFactory.valueOf(ScriptFsOps.free(mount).toDouble()) })
+        // Path utilities — pure string ops, no mount access
+        t.rawset("combine", fn { args ->
+            ValueFactory.valueOf(ScriptFsOps.combine(args.arg(1).toString(), args.arg(2).toString()))
+        })
+        t.rawset("getName", fn { args ->
+            ValueFactory.valueOf(ScriptFsOps.getName(args.arg(1).toString()))
+        })
+        t.rawset("getDir", fn { args ->
+            ValueFactory.valueOf(ScriptFsOps.getDir(args.arg(1).toString()))
+        })
         return t
     }
 
@@ -136,22 +153,40 @@ class CobaltLuaHost : ScriptHost {
      * Build the `peripheral` table.
      *
      *   `peripheral.find(kind)` → table or nil
+     *   `peripheral.list([kind])` → table of handles (all peripherals on the channel)
      *
-     * For v0 only [MonitorPeripheral] is exposed. The returned table holds
-     * closures that delegate to the underlying peripheral instance, so
-     * subsequent calls always reach the live device (handles being moved
-     * between Lua locals doesn't break the binding).
+     * For v0 only [MonitorPeripheral] is exposed; future kinds wrap the same way.
      */
     private fun makePeripheralTable(env: ScriptEnv): LuaTable {
         val t = LuaTable()
         t.rawset("find", fn { args ->
             val kind = args.arg(1).toString()
             val p = env.findPeripheral(kind) ?: return@fn Constants.NIL
-            when (p) {
-                is MonitorPeripheral -> wrapMonitor(p)
-                else -> Constants.NIL  // unknown kind for v0
-            }
+            wrapPeripheral(p)
         })
+        t.rawset("list", fn { args ->
+            val kind = if (args.count() >= 1 && !args.arg(1).isNil()) args.arg(1).toString() else null
+            val arr = LuaTable()
+            for ((i, p) in env.listPeripherals(kind).withIndex()) {
+                val wrapped = wrapPeripheral(p)
+                if (wrapped !== Constants.NIL) arr.rawset(i + 1, wrapped)
+            }
+            arr
+        })
+        return t
+    }
+
+    private fun wrapPeripheral(p: com.brewingcoder.oc2.platform.peripheral.Peripheral): LuaValue = when (p) {
+        is MonitorPeripheral -> wrapMonitor(p)
+        else -> Constants.NIL
+    }
+
+    private fun makeColorsTable(): LuaTable {
+        val t = LuaTable()
+        for ((name, value) in ScriptColors.PALETTE) {
+            // Use double to preserve high-bit alpha across Lua's number model.
+            t.rawset(name, ValueFactory.valueOf(value.toLong().and(0xFFFFFFFFL).toDouble()))
+        }
         return t
     }
 
@@ -162,9 +197,19 @@ class CobaltLuaHost : ScriptHost {
             mon.write(args.arg(1).toString())
             Constants.NIL
         })
+        t.rawset("println", fn { args ->
+            mon.println(args.arg(1).toString())
+            Constants.NIL
+        })
         t.rawset("setCursorPos", fn { args ->
             mon.setCursorPos(args.arg(1).toInteger().toInt(), args.arg(2).toInteger().toInt())
             Constants.NIL
+        })
+        t.rawset("getCursorPos", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs {
+                val (col, row) = mon.getCursorPos()
+                return ValueFactory.varargsOf(ValueFactory.valueOf(col), ValueFactory.valueOf(row))
+            }
         })
         t.rawset("clear", fn {
             mon.clear()
@@ -173,20 +218,19 @@ class CobaltLuaHost : ScriptHost {
         t.rawset("getSize", object : VarArgFunction() {
             override fun invoke(state: LuaState, args: Varargs): Varargs {
                 val (cols, rows) = mon.getSize()
-                // Returns two values — Lua idiom: `local w, h = mon.getSize()`
-                return ValueFactory.varargsOf(
-                    ValueFactory.valueOf(cols),
-                    ValueFactory.valueOf(rows),
-                )
+                return ValueFactory.varargsOf(ValueFactory.valueOf(cols), ValueFactory.valueOf(rows))
             }
         })
         // Color setters take ARGB ints. Use toLong().toInt() so values >= 2^31
         // (e.g. 0xFFD4D4D4) round-trip correctly — Lua numbers are doubles, and
         // direct LuaInteger.toInt() truncates to int range losing the high alpha bit.
-        t.rawset("setForegroundColor", fn { args ->
+        // setForegroundColor + CC:T-aligned alias setTextColor
+        val setFg: VarArgFunction = fn { args ->
             mon.setForegroundColor(args.arg(1).toDouble().toLong().toInt())
             Constants.NIL
-        })
+        }
+        t.rawset("setForegroundColor", setFg)
+        t.rawset("setTextColor", setFg)
         t.rawset("setBackgroundColor", fn { args ->
             mon.setBackgroundColor(args.arg(1).toDouble().toLong().toInt())
             Constants.NIL

@@ -31,7 +31,13 @@ interface MonitorPeripheral : Peripheral {
     override val kind: String get() = "monitor"
 
     fun write(text: String)
+    /** [write] then a newline (cursor wraps to col 0 of next row). Convenience. */
+    fun println(text: String) { write(text); write("\n") }
+
     fun setCursorPos(col: Int, row: Int)
+    /** Returns (col, row) — the position the next [write] will start at. */
+    fun getCursorPos(): Pair<Int, Int>
+
     fun clear()
     /** Returns (cols, rows) for the full multi-block surface. */
     fun getSize(): Pair<Int, Int>
@@ -42,6 +48,8 @@ interface MonitorPeripheral : Peripheral {
      * `0xFFD4D4D4` for the default editor.foreground color.
      */
     fun setForegroundColor(color: Int)
+    /** CC:Tweaked-aligned alias for [setForegroundColor]. */
+    fun setTextColor(color: Int) { setForegroundColor(color) }
 
     /**
      * Set the background (cell-fill) color used by subsequent [write] calls.

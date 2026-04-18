@@ -33,6 +33,7 @@ class ScriptRunHandle(
     private val mount: WritableMount,
     private val cwd: String,
     private val peripheralFinder: (String) -> Peripheral?,
+    private val peripheralLister: (String?) -> List<Peripheral> = { emptyList() },
 ) {
 
     private val outputQueue: ConcurrentLinkedQueue<OutputItem> = ConcurrentLinkedQueue()
@@ -107,5 +108,6 @@ class ScriptRunHandle(
             }
         }
         override fun findPeripheral(kind: String): Peripheral? = peripheralFinder(kind)
+        override fun listPeripherals(kind: String?): List<Peripheral> = peripheralLister(kind)
     }
 }
