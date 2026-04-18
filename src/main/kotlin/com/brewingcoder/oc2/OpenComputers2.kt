@@ -1,6 +1,9 @@
 package com.brewingcoder.oc2
 
+import com.brewingcoder.oc2.block.ModBlockEntities
 import com.brewingcoder.oc2.block.ModBlocks
+import com.brewingcoder.oc2.item.ModItems
+import com.brewingcoder.oc2.item.ModTabs
 import net.neoforged.bus.api.SubscribeEvent
 import net.neoforged.fml.common.EventBusSubscriber
 import net.neoforged.fml.common.Mod
@@ -27,6 +30,9 @@ object OpenComputers2 {
         LOGGER.info("OpenComputers2 booting…")
 
         ModBlocks.REGISTRY.register(MOD_BUS)
+        ModBlockEntities.REGISTRY.register(MOD_BUS)
+        ModItems.REGISTRY.register(MOD_BUS)
+        ModTabs.REGISTRY.register(MOD_BUS)
 
         runForDist(
             clientTarget = { MOD_BUS.addListener(::onClientSetup) },

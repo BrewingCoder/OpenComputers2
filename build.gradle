@@ -63,6 +63,10 @@ neoForge {
 
             // Comma-separated list of namespaces to load gametests from. Empty = all namespaces.
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+
+            // Force window size — dev launcher otherwise defaults to a tiny window.
+            // options.txt overrideWidth/Height isn't honored when MC is launched with these args.
+            programArguments.addAll '--width', '1900', '--height', '1280'
         }
 
         server {
