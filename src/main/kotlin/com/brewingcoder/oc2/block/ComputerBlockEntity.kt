@@ -304,6 +304,13 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
     }
 
     /**
+     * Event queue of the currently-running script, or null if none. Event
+     * sources (monitor touches, network messages, etc.) fan out via this.
+     */
+    fun runningScriptEvents(): com.brewingcoder.oc2.platform.script.ScriptEventQueue? =
+        scriptRunner.current()?.takeIf { !it.isDone() }?.eventQueue
+
+    /**
      * Toggle power. Powering off kills any in-flight script and clears the
      * recent-output buffer (the next power-on starts with a clean terminal).
      * Powering on is a no-op beyond setting the flag — the shell becomes

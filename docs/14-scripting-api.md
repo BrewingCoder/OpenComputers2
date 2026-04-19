@@ -35,6 +35,39 @@ print("hello", 42, true)         -- "hello\t42\ttrue\n"
 print("hello", 42, true);         // "hello 42 true\n"
 ```
 
+### `os.pullEvent([filter])` / `os.queueEvent(name, ...)` / `os.startTimer(secs)`
+
+Cooperative scheduling primitives, CC:Tweaked-style. The script blocks on
+`os.pullEvent` until an event arrives — the worker thread sleeps; the server
+keeps ticking; other peripherals/scripts on the same channel don't pause.
+
+| Function | Returns |
+|---|---|
+| `os.pullEvent()` | `name, args...` from the next event |
+| `os.pullEvent("monitor_touch")` | next event of that name; non-matching events are dropped (Phase 1 — no requeue yet) |
+| `os.queueEvent(name, ...)` | enqueue an event into THIS script's queue |
+| `os.startTimer(secs)` | timer id; fires `"timer", id` event after [secs] seconds |
+
+Event sources shipped in Phase 1:
+- **`monitor_touch`** — args: `(col, row, playerName)`. Fires for every right-click on a monitor sharing your wifi channel.
+- **`network_message`** — args: `(from, body)`. Fires every time a `network.send` arrives at this computer.
+- **`timer`** — args: `(timerId)`. Fires once for each `os.startTimer` after the delay.
+
+```lua
+print("waiting for input...")
+while true do
+  local name, a, b, c = os.pullEvent()
+  if name == "monitor_touch" then
+    print("touch:", a, b, "by", c)
+  elseif name == "network_message" then
+    print("msg from", a, ":", b)
+  elseif name == "timer" then
+    print("timer", a, "fired")
+    return
+  end
+end
+```
+
 ### `sleep(ms)`
 
 Block the script for `ms` milliseconds. Range: 0 to 60000 (clamped).

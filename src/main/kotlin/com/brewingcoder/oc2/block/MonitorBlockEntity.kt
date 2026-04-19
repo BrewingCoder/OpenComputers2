@@ -319,6 +319,16 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
             while (master.touchQueue.size > MonitorPeripheral.TOUCH_QUEUE_CAP) {
                 master.touchQueue.removeFirst()
             }
+            // Also fire as an os.pullEvent("monitor_touch") to any running scripts
+            // on this monitor's channel. Polling pollTouches() still works in
+            // parallel — both APIs coexist.
+            com.brewingcoder.oc2.event.EventDispatch.fireToChannel(
+                master.channelId,
+                com.brewingcoder.oc2.platform.script.ScriptEvent(
+                    "monitor_touch",
+                    listOf(col, row, playerName),
+                ),
+            )
         }
     }
 

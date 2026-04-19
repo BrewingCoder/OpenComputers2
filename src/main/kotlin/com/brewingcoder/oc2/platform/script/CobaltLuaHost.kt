@@ -54,6 +54,10 @@ class CobaltLuaHost : ScriptHost {
             globals.rawset("colors", makeColorsTable())
             globals.rawset("network", makeNetworkTable(env))
             globals.rawset("json", makeJsonTable())
+            // CC:T-style os.* event API. Cobalt's `os` library exists already
+            // (clock/time/date); we MERGE into the existing table rather than
+            // overwriting it.
+            installOsEventApi(globals, env)
             globals.rawset("sleep", fn { args ->
                 val ms = args.arg(1).toDouble().toLong().coerceIn(0L, 60_000L)
                 if (ms > 0) Thread.sleep(ms)
@@ -357,6 +361,85 @@ class CobaltLuaHost : ScriptHost {
      *
      * Decode errors (malformed JSON) raise a Lua error so callers can `pcall`.
      */
+    /**
+     * Install the CC:T-style `os.*` event API onto the existing `os` table that
+     * Cobalt's CoreLibraries provides. We do NOT replace the table — we merge
+     * three new functions: `pullEvent`, `queueEvent`, `startTimer`.
+     *
+     * Timer scheduling is local to this script's event queue: the worker thread
+     * sleeps until the timer fires (no server-tick coupling needed for Phase 1).
+     */
+    private fun installOsEventApi(globals: LuaTable, env: ScriptEnv) {
+        val os = globals.rawget("os") as? LuaTable ?: LuaTable().also { globals.rawset("os", it) }
+        val nextTimerId = java.util.concurrent.atomic.AtomicInteger(1)
+
+        // os.pullEvent([filter])  →  name, args... (blocks indefinitely)
+        os.rawset("pullEvent", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs {
+                val filter = if (args.count() >= 1 && !args.arg(1).isNil()) args.arg(1).toString() else null
+                // Block "indefinitely" but in chunks so kill/interrupt is responsive.
+                while (true) {
+                    val ev = env.events.poll(filter, 60_000L) ?: continue
+                    val out = arrayOfNulls<LuaValue>(1 + ev.args.size)
+                    out[0] = ValueFactory.valueOf(ev.name)
+                    for ((i, a) in ev.args.withIndex()) out[i + 1] = toLuaValue(a)
+                    @Suppress("UNCHECKED_CAST")
+                    return ValueFactory.varargsOf(*(out as Array<LuaValue>))
+                }
+                @Suppress("UNREACHABLE_CODE") Constants.NONE
+            }
+        })
+
+        // os.queueEvent(name, ...)  →  enqueue an event into THIS script's queue
+        os.rawset("queueEvent", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs {
+                if (args.count() < 1) return Constants.NONE
+                val name = args.arg(1).toString()
+                val payload = (2..args.count()).map { fromLuaValue(args.arg(it)) }
+                env.events.offer(ScriptEvent(name, payload))
+                return Constants.NONE
+            }
+        })
+
+        // os.startTimer(seconds)  →  timerId. Fires "timer" event with that id when due.
+        os.rawset("startTimer", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs {
+                val secs = args.arg(1).toDouble().coerceAtLeast(0.0)
+                val id = nextTimerId.getAndIncrement()
+                val delayMs = (secs * 1000).toLong()
+                Thread({
+                    try {
+                        Thread.sleep(delayMs)
+                        env.events.offer(ScriptEvent("timer", listOf(id)))
+                    } catch (_: InterruptedException) { /* script killed; drop */ }
+                }, "OC2 timer pid=?-id=$id").apply { isDaemon = true }.start()
+                return ValueFactory.valueOf(id)
+            }
+        })
+    }
+
+    /** Convert a Kotlin event-arg back to a LuaValue. Supports the wire types we accept. */
+    private fun toLuaValue(v: Any?): LuaValue = when (v) {
+        null -> Constants.NIL
+        is Boolean -> ValueFactory.valueOf(v)
+        is Int -> ValueFactory.valueOf(v.toDouble())
+        is Long -> ValueFactory.valueOf(v.toDouble())
+        is Double -> ValueFactory.valueOf(v)
+        is String -> ValueFactory.valueOf(v)
+        else -> ValueFactory.valueOf(v.toString())
+    }
+
+    /** Inverse of [toLuaValue] — extract a primitive from a Lua arg for queueEvent. */
+    private fun fromLuaValue(v: LuaValue): Any? = when {
+        v.isNil() -> null
+        v.type() == Constants.TBOOLEAN -> v.toBoolean()
+        v.isNumber() -> {
+            val d = v.toDouble()
+            if (d.isFinite() && d == d.toLong().toDouble()) d.toLong().toInt() else d
+        }
+        else -> v.toString()
+    }
+
     private fun makeJsonTable(): LuaTable {
         val t = LuaTable()
         t.rawset("encode", object : VarArgFunction() {

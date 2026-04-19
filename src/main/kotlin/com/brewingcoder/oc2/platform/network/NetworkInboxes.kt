@@ -30,6 +30,15 @@ object NetworkInboxes {
     private val inboxes: ConcurrentHashMap<Int, ArrayDeque<Message>> = ConcurrentHashMap()
 
     /**
+     * Optional global delivery hook — fires ALSO (in addition to the inbox
+     * queue) on every successful [deliver]. Set by the BE layer at mod init
+     * to fan messages out as `network_message` script events. Platform-pure:
+     * this object never imports the BE; it just calls the hook by reference.
+     */
+    @JvmStatic
+    var onDelivery: ((computerId: Int, msg: Message) -> Unit)? = null
+
+    /**
      * Deliver [msg] into the inbox for [computerId]. Caller is responsible for
      * channel filtering and self-exclusion — this just queues.
      */
@@ -40,6 +49,7 @@ object NetworkInboxes {
             q.addLast(msg)
             while (q.size > INBOX_CAP) q.removeFirst()
         }
+        onDelivery?.invoke(computerId, msg)
     }
 
     /** Pop + return the oldest message in [computerId]'s inbox, or null. */

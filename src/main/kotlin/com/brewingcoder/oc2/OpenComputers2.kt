@@ -42,6 +42,18 @@ object OpenComputers2 {
         // before any world loads. No DeferredRegister; static map.
         ModParts.register()
 
+        // Wire NetworkInboxes deliveries to also fan out as `network_message`
+        // script events. Set once at mod init; the BE layer doesn't need to know.
+        com.brewingcoder.oc2.platform.network.NetworkInboxes.onDelivery = { computerId, msg ->
+            com.brewingcoder.oc2.event.EventDispatch.fireToComputerId(
+                computerId,
+                com.brewingcoder.oc2.platform.script.ScriptEvent(
+                    "network_message",
+                    listOf(msg.from, msg.body),
+                ),
+            )
+        }
+
         // Register the client config — backing toml lives at config/oc2-client.toml
         // and players can edit values without rebuilding the mod.
         ModList.get().getModContainerById(ID).orElseThrow().registerConfig(

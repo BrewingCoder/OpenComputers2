@@ -41,6 +41,9 @@ class ScriptRunHandle(
     private val outputQueue: ConcurrentLinkedQueue<OutputItem> = ConcurrentLinkedQueue()
     private val killFlag: AtomicBoolean = AtomicBoolean(false)
 
+    /** Per-script event queue exposed to the env's `os.pullEvent` binding. */
+    val eventQueue: ScriptEventQueue = ScriptEventQueue()
+
     @Volatile private var thread: Thread? = null
     @Volatile private var done: Boolean = false
     @Volatile private var resultRef: ScriptResult? = null
@@ -112,5 +115,6 @@ class ScriptRunHandle(
         override fun findPeripheral(kind: String): Peripheral? = peripheralFinder(kind)
         override fun listPeripherals(kind: String?): List<Peripheral> = peripheralLister(kind)
         override val network: NetworkAccess = this@ScriptRunHandle.networkAccess
+        override val events: ScriptEventQueue = this@ScriptRunHandle.eventQueue
     }
 }

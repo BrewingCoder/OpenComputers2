@@ -46,6 +46,13 @@ interface ScriptEnv {
     fun listPeripherals(kind: String? = null): List<Peripheral> = emptyList()
     /** Inbox + broadcast for `network.send/recv/peek/size/id`. Default is inert (tests). */
     val network: NetworkAccess get() = NetworkAccess.NOOP
+
+    /**
+     * Event queue this script reads via `os.pullEvent`. Default is a fresh
+     * always-empty queue (tests that don't need events). Production passes the
+     * per-script handle's queue.
+     */
+    val events: ScriptEventQueue get() = ScriptEventQueue()
 }
 
 data class ScriptResult(
