@@ -35,6 +35,18 @@ interface Part {
     var channelId: String
 
     /**
+     * Kind-specific configuration. Free-form `key → value` map; what keys are
+     * meaningful is up to the concrete Part. Examples:
+     *   - RedstonePart: `"inverted" -> "true"`
+     *   - FluidPart: `"max_throughput" -> "500"` (mB/op)
+     *   - EnergyPart: `"max_rate" -> "100"` (FE/tick)
+     *
+     * The PartConfigScreen renders kind-specific widgets that read/write this
+     * map. Persisted in NBT alongside label/channelId.
+     */
+    val options: MutableMap<String, String>
+
+    /**
      * Called once after the host BE has wired this part into its face slot.
      * Implementations should resolve their first capability lookup here. Re-runs
      * on `neighborChanged` via [onNeighborChanged].

@@ -182,35 +182,41 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
     }
 
     private fun drainScriptOutput() {
-        val handle = scriptRunner.current() ?: return
-        val items = handle.drainOutput()
-        if (items.isEmpty() && !handle.isDone()) return
-
-        val lines = mutableListOf<String>()
-        var clearFirst = false
-        for (item in items) {
-            when (item) {
-                is ScriptRunHandle.OutputItem.Clear -> {
-                    clearFirst = true
-                    lines.clear()
+        // Drain EVERY handle's output queue each tick. Foreground's lines route
+        // to the terminal; background's lines are drained-and-dropped (keeps
+        // worker queues from backing up — bg log viewing is a future feature).
+        val foreground = scriptRunner.current()
+        for (h in scriptRunner.all()) {
+            val items = h.drainOutput()
+            if (h !== foreground) continue   // bg: items already drained, discard
+            // Below: same logic as before, but only for the foreground handle.
+            val lines = mutableListOf<String>()
+            var clearFirst = false
+            for (item in items) {
+                when (item) {
+                    is ScriptRunHandle.OutputItem.Clear -> {
+                        clearFirst = true
+                        lines.clear()
+                    }
+                    is ScriptRunHandle.OutputItem.Line -> lines.add(item.text)
                 }
-                is ScriptRunHandle.OutputItem.Line -> lines.add(item.text)
             }
-        }
-        if (handle.isDone()) {
-            val result = handle.result()
-            if (result != null && !result.ok) {
-                val msg = result.errorMessage ?: "unknown"
-                val banner = if (msg == ScriptRunHandle.KILLED) "[killed]" else "[script error] $msg"
-                lines.add(banner)
+            if (h.isDone()) {
+                val result = h.result()
+                if (result != null && !result.ok) {
+                    val msg = result.errorMessage ?: "unknown"
+                    val banner = if (msg == ScriptRunHandle.KILLED) "[killed]" else "[script error] $msg"
+                    lines.add(banner)
+                }
             }
-            scriptRunner.clearIfDone()
+            if (lines.isNotEmpty() || clearFirst) {
+                sendOutputToOriginator(lines, clearFirst)
+                recordToRecent(lines, clearFirst)
+            }
+            if (h.isDone()) scriptOriginator = null
         }
-        if (lines.isNotEmpty() || clearFirst) {
-            sendOutputToOriginator(lines, clearFirst)
-            recordToRecent(lines, clearFirst)
-        }
-        if (handle.isDone()) scriptOriginator = null
+        // Sweep finished handles in one pass after draining.
+        (scriptRunner as? BeScriptRunner)?.clearIfDone()
     }
 
     private fun recordToRecent(lines: List<String>, clearFirst: Boolean) {

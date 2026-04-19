@@ -39,14 +39,35 @@ class PartConfigScreen(
     private val kind: String,
     private val initialLabel: String,
     private val initialChannel: String,
+    private val initialAccessSide: String,
+    private val initialOptions: Map<String, String>,
 ) : Screen(Component.translatable("screen.${OpenComputers2.ID}.part_config")) {
 
     private lateinit var labelBox: EditBox
     private lateinit var channelBox: EditBox
 
-    /** Dropdown buttons — created on demand, removed when the dropdown closes. */
-    private val dropdownButtons: MutableList<Button> = mutableListOf()
-    private var dropdownOpen: Boolean = false
+    /** Channel dropdown — buttons created on demand, removed when the dropdown closes. */
+    private val channelDropdownButtons: MutableList<Button> = mutableListOf()
+    private var channelDropdownOpen: Boolean = false
+
+    /** Side dropdown — same pattern as channel dropdown. */
+    private val sideDropdownButtons: MutableList<Button> = mutableListOf()
+    private var sideDropdownOpen: Boolean = false
+
+    /** Current accessSide selection. Cycle button mutates; Save sends it. */
+    private var accessSide: String = initialAccessSide
+
+    /** Mutable per-kind options. Live edits write here; Save serializes to payload. */
+    private val options: MutableMap<String, String> = initialOptions.toMutableMap()
+
+    /** Reference to invert toggle (redstone only) so we can update its label on click. */
+    private var invertButton: Button? = null
+
+    /** Reference to side-cycle button so we can update its label on cycle. Null when not shown. */
+    private var sideButton: Button? = null
+
+    /** Which kinds get a side picker. Capability-backed parts only — redstone/block don't care. */
+    private val sideAware: Boolean get() = kind in setOf("inventory", "fluid", "energy")
 
     override fun init() {
         super.init()
@@ -65,11 +86,35 @@ class PartConfigScreen(
         channelBox.value = initialChannel
         addRenderableWidget(channelBox)
         addRenderableWidget(
-            Button.builder(Component.literal("▼"), { toggleDropdown() })
+            Button.builder(Component.literal("▼"), { toggleChannelDropdown() })
                 .pos(left + PANEL_W - 28, top + 76)
                 .size(18, 18)
                 .build()
         )
+
+        // Row 3: Side selector (only for capability-backed parts where the
+        // side matters — sided IItemHandler/IFluidHandler/IEnergyStorage).
+        // One button shows current selection; clicking opens a dropdown of all
+        // 7 options (auto + 6 directions).
+        if (sideAware) {
+            val btn = Button.builder(Component.literal(sideButtonLabel())) { _ -> toggleSideDropdown() }
+                .pos(left + 12, top + 116)
+                .size(PANEL_W - 24, 18)
+                .build()
+            sideButton = btn
+            addRenderableWidget(btn)
+        }
+
+        // Per-kind options. Each kind gets its own block of widgets here.
+        // Today: redstone has an "Inverted" toggle. Others: nothing yet.
+        if (kind == "redstone") {
+            val btn = Button.builder(Component.literal(invertButtonLabel())) { _ -> toggleInverted() }
+                .pos(left + 12, top + 116)
+                .size(PANEL_W - 24, 18)
+                .build()
+            invertButton = btn
+            addRenderableWidget(btn)
+        }
 
         // Save / Cancel
         val btnY = top + PANEL_H - 28
@@ -90,6 +135,57 @@ class PartConfigScreen(
         setInitialFocus(labelBox)
     }
 
+    private fun invertButtonLabel(): String =
+        "Inverted: ${if (options["inverted"] == "true") "ON" else "off"}"
+
+    private fun toggleInverted() {
+        val now = options["inverted"] == "true"
+        options["inverted"] = if (now) "false" else "true"
+        invertButton?.message = Component.literal(invertButtonLabel())
+    }
+
+    private fun sideButtonLabel(): String {
+        val readable = if (accessSide.isBlank()) "auto" else accessSide
+        return "Side: ${readable.uppercase()}  ▼"
+    }
+
+    private fun toggleSideDropdown() {
+        if (sideDropdownOpen) closeSideDropdown() else openSideDropdown()
+    }
+
+    private fun openSideDropdown() {
+        if (channelDropdownOpen) closeChannelDropdown()
+        // Hide overlapping EditBoxes — vanilla widget rendering lets their
+        // text bleed through dropdown button backgrounds. Restored on close.
+        labelBox.visible = false
+        channelBox.visible = false
+        val left = (width - PANEL_W) / 2
+        val top = (height - PANEL_H) / 2
+        val options = listOf("auto", "north", "south", "east", "west", "up", "down")
+        // Pop ABOVE the side row so we don't overrun the Save/Cancel buttons.
+        for ((i, opt) in options.withIndex()) {
+            val btn = Button.builder(Component.literal(opt.uppercase())) { _ ->
+                accessSide = if (opt == "auto") "" else opt
+                sideButton?.message = Component.literal(sideButtonLabel())
+                closeSideDropdown()
+            }
+                .pos(left + 12, top + 96 - (i * 18))
+                .size(PANEL_W - 24, 16)
+                .build()
+            addRenderableWidget(btn)
+            sideDropdownButtons.add(btn)
+        }
+        sideDropdownOpen = true
+    }
+
+    private fun closeSideDropdown() {
+        for (b in sideDropdownButtons) removeWidget(b)
+        sideDropdownButtons.clear()
+        sideDropdownOpen = false
+        labelBox.visible = true
+        channelBox.visible = true
+    }
+
     override fun render(graphics: GuiGraphics, mouseX: Int, mouseY: Int, partialTick: Float) {
         renderBackground(graphics, mouseX, mouseY, partialTick)
         val left = (width - PANEL_W) / 2
@@ -98,6 +194,7 @@ class PartConfigScreen(
         graphics.drawString(font, "$kind  ·  ${face.serializedName}", left + 12, top + 12, 0xFFFFFF, false)
         graphics.drawString(font, "name:",    left + 12, top + 26, 0xC0C0C0, false)
         graphics.drawString(font, "channel:", left + 12, top + 66, 0xC0C0C0, false)
+        if (sideAware) graphics.drawString(font, "access side:", left + 12, top + 106, 0xC0C0C0, false)
         super.render(graphics, mouseX, mouseY, partialTick)
     }
 
@@ -111,21 +208,27 @@ class PartConfigScreen(
 
     private fun saveAndClose() {
         PacketDistributor.sendToServer(
-            UpdatePartConfigPayload(pos, face, labelBox.value, channelBox.value)
+            UpdatePartConfigPayload(
+                pos, face, labelBox.value, channelBox.value, accessSide,
+                com.brewingcoder.oc2.platform.parts.PartOptionsCodec.encode(options),
+            )
         )
         onClose()
     }
 
     /** Toggle the nearby-channel dropdown beneath the channel field. */
-    private fun toggleDropdown() {
-        if (dropdownOpen) {
-            closeDropdown()
+    private fun toggleChannelDropdown() {
+        if (channelDropdownOpen) {
+            closeChannelDropdown()
         } else {
-            openDropdown()
+            openChannelDropdown()
         }
     }
 
-    private fun openDropdown() {
+    private fun openChannelDropdown() {
+        if (sideDropdownOpen) closeSideDropdown()
+        labelBox.visible = false
+        channelBox.visible = false
         val left = (width - PANEL_W) / 2
         val top = (height - PANEL_H) / 2
         val channels = nearbyChannels()
@@ -134,23 +237,25 @@ class PartConfigScreen(
             val isPlaceholder = channels.isEmpty()
             val btn = Button.builder(Component.literal(ch)) { _ ->
                 if (!isPlaceholder) channelBox.value = ch
-                closeDropdown()
+                closeChannelDropdown()
             }
-                .pos(left + 12, top + 96 + (i * 18))
+                // Pop list ABOVE the channel row so it doesn't collide with the
+                // side row below — Y goes upward from there.
+                .pos(left + 12, top + 56 - (i * 18))
                 .size(PANEL_W - 24, 16)
                 .build()
             addRenderableWidget(btn)
-            dropdownButtons.add(btn)
+            channelDropdownButtons.add(btn)
         }
-        dropdownOpen = true
+        channelDropdownOpen = true
     }
 
-    private fun closeDropdown() {
-        for (b in dropdownButtons) {
-            removeWidget(b)
-        }
-        dropdownButtons.clear()
-        dropdownOpen = false
+    private fun closeChannelDropdown() {
+        for (b in channelDropdownButtons) removeWidget(b)
+        channelDropdownButtons.clear()
+        channelDropdownOpen = false
+        labelBox.visible = true
+        channelBox.visible = true
     }
 
     /**
@@ -174,7 +279,7 @@ class PartConfigScreen(
 
     companion object {
         const val PANEL_W = 200
-        const val PANEL_H = 140
+        const val PANEL_H = 170
         const val NEARBY_RADIUS = 32
         val BG_TEXTURE: ResourceLocation =
             ResourceLocation.fromNamespaceAndPath(OpenComputers2.ID, "textures/gui/part_config.png")

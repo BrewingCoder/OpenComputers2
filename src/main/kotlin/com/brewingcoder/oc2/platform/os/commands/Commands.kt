@@ -27,12 +27,13 @@ object DefaultCommands {
     fun build(): Shell {
         val luaHost: ScriptHost = CobaltLuaHost()
         val jsHost: ScriptHost = RhinoJSHost()
+        val hosts = mapOf("lua" to luaHost, "js" to jsHost)
         val core: List<ShellCommand> = listOf(
             EchoCommand(), PwdCommand(), CdCommand(), LsCommand(),
             MkdirCommand(), RmCommand(), CatCommand(), WriteCommand(),
             ClearCommand(), IdCommand(), DfCommand(),
-            RunCommand(mapOf("lua" to luaHost, "js" to jsHost)),
-            PsCommand(), KillCommand(),
+            RunCommand(hosts), BgCommand(hosts),
+            PsCommand(), JobsCommand(), FgCommand(), KillCommand(),
         )
         val all = core.toMutableList<ShellCommand>()
         all.add(HelpCommand { all })  // help references the full set
@@ -305,81 +306,127 @@ class IdCommand : ShellCommand {
  */
 class RunCommand(private val hostsByExt: Map<String, ScriptHost>) : ShellCommand {
     override val name = "run"
-    override val summary = "run a script (e.g. run hello.lua, run hello.js)"
-    override fun run(args: List<String>, ctx: ShellContext): Int {
+    override val summary = "run a script in the foreground (e.g. run hello.lua)"
+    override fun run(args: List<String>, ctx: ShellContext): Int =
+        ScriptStarter.start(args, ctx, hostsByExt, foreground = true)
+}
+
+class BgCommand(private val hostsByExt: Map<String, ScriptHost>) : ShellCommand {
+    override val name = "bg"
+    override val summary = "run a script in the background (output not shown)"
+    override fun run(args: List<String>, ctx: ShellContext): Int =
+        ScriptStarter.start(args, ctx, hostsByExt, foreground = false)
+}
+
+/** Shared start logic for [RunCommand] + [BgCommand]. */
+internal object ScriptStarter {
+    fun start(args: List<String>, ctx: ShellContext, hostsByExt: Map<String, ScriptHost>, foreground: Boolean): Int {
+        val cmdName = if (foreground) "run" else "bg"
         if (args.isEmpty()) {
-            ctx.out.println("usage: run <file.lua|file.js>")
+            ctx.out.println("usage: $cmdName <file.lua|file.js>")
             return 2
         }
         val target = try {
             PathResolver.resolve(ctx.cwd, args[0])
         } catch (e: StorageException) {
-            ctx.out.println("run: ${e.message}")
-            return 1
+            ctx.out.println("$cmdName: ${e.message}"); return 1
         }
-        if (!ctx.mount.exists(target)) {
-            ctx.out.println("run: no such file: ${args[0]}")
-            return 1
-        }
-        if (ctx.mount.isDirectory(target)) {
-            ctx.out.println("run: is a directory: ${args[0]}")
-            return 1
-        }
+        if (!ctx.mount.exists(target)) { ctx.out.println("$cmdName: no such file: ${args[0]}"); return 1 }
+        if (ctx.mount.isDirectory(target)) { ctx.out.println("$cmdName: is a directory: ${args[0]}"); return 1 }
         val ext = MountPaths.name(target).substringAfterLast('.', "").lowercase()
         val host = hostsByExt[ext] ?: run {
-            ctx.out.println("run: no host for extension '.$ext'. supported: ${hostsByExt.keys.sorted().joinToString { ".$it" }}")
+            ctx.out.println("$cmdName: no host for extension '.$ext'. supported: ${hostsByExt.keys.sorted().joinToString { ".$it" }}")
             return 1
         }
         val source = try {
             ctx.mount.openForRead(target).use { ch ->
                 val size = ch.size().toInt()
                 val buf = ByteBuffer.allocate(size)
-                while (buf.hasRemaining()) {
-                    val n = ch.read(buf)
-                    if (n < 0) break
-                }
+                while (buf.hasRemaining()) { val n = ch.read(buf); if (n < 0) break }
                 String(buf.array(), 0, buf.position(), Charsets.UTF_8)
             }
         } catch (e: StorageException) {
-            ctx.out.println("run: ${e.message}")
-            return 1
+            ctx.out.println("$cmdName: ${e.message}"); return 1
         }
         val chunkName = MountPaths.name(target)
-        val startResult = ctx.scriptRunner.start(host, source, chunkName, ctx.mount, ctx.cwd, ctx.peripheralFinder, ctx.peripheralLister, ctx.networkAccess)
-        return when (startResult) {
-            is com.brewingcoder.oc2.platform.os.ScriptRunner.StartResult.Started -> {
-                ctx.out.println("started '${chunkName}' (pid=${startResult.handle.pid}). use `ps` / `kill` to manage.")
-                0
+        return if (foreground) {
+            val r = ctx.scriptRunner.start(host, source, chunkName, ctx.mount, ctx.cwd, ctx.peripheralFinder, ctx.peripheralLister, ctx.networkAccess)
+            when (r) {
+                is com.brewingcoder.oc2.platform.os.ScriptRunner.StartResult.Started -> {
+                    ctx.out.println("started '$chunkName' (pid=${r.handle.pid}). use `jobs` / `kill` to manage.")
+                    0
+                }
+                is com.brewingcoder.oc2.platform.os.ScriptRunner.StartResult.AlreadyRunning -> {
+                    ctx.out.println("run: '${r.current.chunkName}' (pid=${r.current.pid}) already running. `bg` runs in the background instead.")
+                    1
+                }
             }
-            is com.brewingcoder.oc2.platform.os.ScriptRunner.StartResult.AlreadyRunning -> {
-                ctx.out.println("run: script '${startResult.current.chunkName}' (pid=${startResult.current.pid}) already running. use `kill` first.")
-                1
-            }
+        } else {
+            val r = ctx.scriptRunner.startBackground(host, source, chunkName, ctx.mount, ctx.cwd, ctx.peripheralFinder, ctx.peripheralLister, ctx.networkAccess)
+            ctx.out.println("started '$chunkName' in background (pid=${r.handle.pid}).")
+            0
         }
     }
 }
 
 class PsCommand : ShellCommand {
     override val name = "ps"
-    override val summary = "show currently running script (if any)"
+    override val summary = "show foreground script (alias for jobs's first row)"
     override fun run(args: List<String>, ctx: ShellContext): Int {
         val cur = ctx.scriptRunner.current()
-        if (cur == null) {
-            ctx.out.println("(no scripts running)")
-        } else {
+        if (cur == null) ctx.out.println("(no foreground script)")
+        else {
             val state = if (cur.isDone()) "done" else "running"
-            ctx.out.println("pid=${cur.pid}  ${state}  ${cur.chunkName}")
+            ctx.out.println("pid=${cur.pid}  $state  ${cur.chunkName}")
         }
+        return 0
+    }
+}
+
+class JobsCommand : ShellCommand {
+    override val name = "jobs"
+    override val summary = "list every running script (foreground + background)"
+    override fun run(args: List<String>, ctx: ShellContext): Int {
+        val all = ctx.scriptRunner.all()
+        if (all.isEmpty()) { ctx.out.println("(no jobs)"); return 0 }
+        val fg = ctx.scriptRunner.current()
+        for (h in all) {
+            val tag = if (h === fg) "fg" else "bg"
+            val state = if (h.isDone()) "done" else "running"
+            ctx.out.println("[${h.pid}] $tag $state  ${h.chunkName}")
+        }
+        return 0
+    }
+}
+
+class FgCommand : ShellCommand {
+    override val name = "fg"
+    override val summary = "promote a background script to foreground (only when no fg)"
+    override fun run(args: List<String>, ctx: ShellContext): Int {
+        if (args.isEmpty()) { ctx.out.println("usage: fg <pid>"); return 2 }
+        val pid = args[0].toIntOrNull() ?: run { ctx.out.println("fg: pid must be a number"); return 2 }
+        val ok = ctx.scriptRunner.moveToForeground(pid)
+        if (!ok) {
+            ctx.out.println("fg: can't promote — pid not in background or foreground busy")
+            return 1
+        }
+        ctx.out.println("promoted pid=$pid to foreground")
         return 0
     }
 }
 
 class KillCommand : ShellCommand {
     override val name = "kill"
-    override val summary = "kill the currently running script"
+    override val summary = "kill foreground (or kill <pid> for any)"
     override fun run(args: List<String>, ctx: ShellContext): Int {
-        val killed = ctx.scriptRunner.kill()
-        ctx.out.println(if (killed) "killed." else "(no scripts running to kill)")
+        if (args.isEmpty()) {
+            val killed = ctx.scriptRunner.kill()
+            ctx.out.println(if (killed) "killed." else "(no foreground script to kill)")
+            return if (killed) 0 else 1
+        }
+        val pid = args[0].toIntOrNull() ?: run { ctx.out.println("kill: pid must be a number"); return 2 }
+        val killed = ctx.scriptRunner.killByPid(pid)
+        ctx.out.println(if (killed) "killed pid=$pid." else "kill: no such pid (or already done)")
         return if (killed) 0 else 1
     }
 }

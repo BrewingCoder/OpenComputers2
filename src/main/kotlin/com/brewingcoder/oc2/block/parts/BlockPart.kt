@@ -20,6 +20,7 @@ class BlockPart : Part {
     override val typeId: String = TYPE_ID
     override var label: String = ""
     override var channelId: String = "default"
+    override val options: MutableMap<String, String> = mutableMapOf()
 
     /** Last known host — captured on attach so the wrapper stays usable across calls. */
     private var host: PartHost? = null
@@ -45,11 +46,16 @@ class BlockPart : Part {
     override fun saveNbt(out: Part.NbtWriter) {
         out.putString("label", label)
         out.putString("channelId", channelId)
+        out.putString("options", com.brewingcoder.oc2.platform.parts.PartOptionsCodec.encode(options))
     }
 
     override fun loadNbt(input: Part.NbtReader) {
         if (input.has("label")) label = input.getString("label")
         if (input.has("channelId")) channelId = input.getString("channelId")
+        if (input.has("options")) {
+            options.clear()
+            options.putAll(com.brewingcoder.oc2.platform.parts.PartOptionsCodec.decode(input.getString("options")))
+        }
     }
 
     private class Wrapper(

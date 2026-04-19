@@ -179,6 +179,37 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
         parts.mapValues { it.value.typeId }
 
     /**
+     * Replace the part's kind-specific options map with [newOpts]. Persisted
+     * to NBT; the part reads its options live via `options[key]`, so config
+     * changes (redstone invert, fluid throughput, etc.) take effect on the
+     * very next call. No re-registration needed.
+     */
+    fun setPartOptions(face: Direction, newOpts: Map<String, String>) {
+        val part = parts[face] ?: return
+        part.options.clear()
+        part.options.putAll(newOpts)
+        setChanged()
+        sync()
+    }
+
+    /**
+     * Update the access-side override of the part on [face]. Empty = use the
+     * install face's opposite (default). Re-resolves the capability so the
+     * peripheral surface flips to the new side immediately.
+     */
+    fun setPartAccessSide(face: Direction, newSide: String) {
+        val part = parts[face] ?: return
+        val cap = part as? com.brewingcoder.oc2.platform.parts.CapabilityBackedPart<*> ?: return
+        if (cap.accessSide == newSide) return
+        OpenComputers2.LOGGER.info("adapter @ {} resided {} on face {} '{}' -> '{}'",
+            blockPos, part.typeId, face, cap.accessSide.ifBlank { "auto" }, newSide.ifBlank { "auto" })
+        cap.accessSide = newSide
+        if (registryShouldTrack) cap.onNeighborChanged(host(face))  // re-resolve
+        setChanged()
+        sync()
+    }
+
+    /**
      * Update the channel of the part on [face]. Unregisters the old
      * [PartChannelRegistrant] (which was indexed under the old channel) and
      * re-registers under the new one.
@@ -246,12 +277,15 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
         override fun defaultLabel(typeId: String): String = "${typeId}_${face.serializedName}_${adapterId}"
 
         @Suppress("UNCHECKED_CAST")
-        override fun <C : Any> lookupCapability(key: CapabilityKey<C>): C? {
+        override fun <C : Any> lookupCapability(key: CapabilityKey<C>, sideOverride: String?): C? {
             val lvl = level as? net.minecraft.server.level.ServerLevel ?: return null
             val cap = PartCapabilityKeys.resolve(key)
-            // The "side" we pass is the face of the *neighbor* that's facing us,
-            // i.e. the opposite of our face direction.
-            return lvl.getCapability(cap, blockPos.relative(face), face.opposite)
+            // Default side = face we install against, opposite (i.e., the side
+            // of the neighbor pointing back at us). Override = explicit player
+            // choice from the part config GUI.
+            val side = if (sideOverride.isNullOrBlank()) face.opposite
+                       else Direction.byName(sideOverride) ?: face.opposite
+            return lvl.getCapability(cap, blockPos.relative(face), side)
         }
 
         override fun readRedstoneSignal(): Int {

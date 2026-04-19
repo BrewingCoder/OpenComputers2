@@ -20,14 +20,17 @@ interface PartHost {
     fun defaultLabel(typeId: String): String
 
     /**
-     * Resolve a NeoForge capability on the adjacent block. The opaque [key]
-     * encodes the capability + side (the face this part sits on). Concrete
-     * implementations register the keys they care about — see
-     * `block/parts/AdapterPartHost`.
+     * Resolve a NeoForge capability on the adjacent block.
+     *
+     * @param sideOverride face serializedName ("north", "up", etc.) to read
+     *   from a specific side of the adjacent block. null/empty = use the
+     *   install face's opposite (i.e., the side of the neighbor pointed
+     *   back at us — the natural default). Useful for sided machines like
+     *   furnaces where top/bottom/sides expose different slots.
      *
      * Returns null when the adjacent block doesn't expose that capability.
      */
-    fun <C : Any> lookupCapability(key: CapabilityKey<C>): C?
+    fun <C : Any> lookupCapability(key: CapabilityKey<C>, sideOverride: String? = null): C?
 
     /**
      * Read the redstone signal level (0–15) feeding into this part's face. Used

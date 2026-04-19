@@ -29,15 +29,26 @@ abstract class CapabilityBackedPart<C : Any>(
     override var label: String = ""
     override var channelId: String = DEFAULT_CHANNEL
 
+    /**
+     * Override the side of the adjacent block we read the capability from.
+     * Empty = use the install face's opposite (the default; matches "I'm
+     * looking at the neighbor's face that points at me"). Set to a face
+     * serializedName ("north", "up", etc.) to force a specific side — useful
+     * for sided machines (furnace top = input, bottom = output, sides = fuel).
+     */
+    var accessSide: String = ""
+
+    override val options: MutableMap<String, String> = mutableMapOf()
+
     private var cachedCapability: C? = null
 
     override fun onAttach(host: PartHost) {
         if (label.isEmpty()) label = host.defaultLabel(typeId)
-        cachedCapability = host.lookupCapability(capabilityKey)
+        cachedCapability = host.lookupCapability(capabilityKey, accessSide.ifBlank { null })
     }
 
     override fun onNeighborChanged(host: PartHost) {
-        cachedCapability = host.lookupCapability(capabilityKey)
+        cachedCapability = host.lookupCapability(capabilityKey, accessSide.ifBlank { null })
     }
 
     override fun onDetach() {
@@ -58,11 +69,18 @@ abstract class CapabilityBackedPart<C : Any>(
     override fun saveNbt(out: Part.NbtWriter) {
         out.putString("label", label)
         out.putString("channelId", channelId)
+        out.putString("accessSide", accessSide)
+        out.putString("options", PartOptionsCodec.encode(options))
     }
 
     override fun loadNbt(input: Part.NbtReader) {
         if (input.has("label")) label = input.getString("label")
         if (input.has("channelId")) channelId = input.getString("channelId")
+        if (input.has("accessSide")) accessSide = input.getString("accessSide")
+        if (input.has("options")) {
+            options.clear()
+            options.putAll(PartOptionsCodec.decode(input.getString("options")))
+        }
     }
 
     companion object {

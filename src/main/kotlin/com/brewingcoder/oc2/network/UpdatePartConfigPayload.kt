@@ -32,6 +32,8 @@ data class UpdatePartConfigPayload(
     val face: Direction,
     val label: String,
     val channel: String,
+    val accessSide: String,  // "" / "auto" = default; "north" etc. = override
+    val options: String,     // PartOptionsCodec-encoded "k=v;k=v"
 ) : CustomPacketPayload {
 
     override fun type(): CustomPacketPayload.Type<UpdatePartConfigPayload> = TYPE
@@ -46,6 +48,8 @@ data class UpdatePartConfigPayload(
                 Direction.STREAM_CODEC, UpdatePartConfigPayload::face,
                 ByteBufCodecs.STRING_UTF8, UpdatePartConfigPayload::label,
                 ByteBufCodecs.STRING_UTF8, UpdatePartConfigPayload::channel,
+                ByteBufCodecs.STRING_UTF8, UpdatePartConfigPayload::accessSide,
+                ByteBufCodecs.STRING_UTF8, UpdatePartConfigPayload::options,
                 ::UpdatePartConfigPayload,
             )
 
@@ -70,8 +74,16 @@ data class UpdatePartConfigPayload(
                 val cleanedLabel = payload.label.trim().take(MAX_LABEL_LENGTH).replace(ALLOWED_RE, "_")
                 val cleanedChannel = payload.channel.trim().take(MAX_CHANNEL_LENGTH).replace(ALLOWED_RE, "_")
                     .ifBlank { AdapterBlockEntity.DEFAULT_CHANNEL }
+                // accessSide: "auto" or "" → default (empty stored). Otherwise
+                // a face name; validated by Direction.byName at apply time.
+                val cleanedSide = payload.accessSide.trim().lowercase().let {
+                    if (it == "auto" || it.isBlank()) "" else it
+                }
                 be.relabelPart(payload.face, cleanedLabel)
                 be.setPartChannel(payload.face, cleanedChannel)
+                be.setPartAccessSide(payload.face, cleanedSide)
+                be.setPartOptions(payload.face,
+                    com.brewingcoder.oc2.platform.parts.PartOptionsCodec.decode(payload.options))
             }
         }
     }

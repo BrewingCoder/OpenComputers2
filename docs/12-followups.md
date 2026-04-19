@@ -99,34 +99,39 @@ Currently caps at 256 lines and oldest drops off. Real shells need a scroll buff
 
 ---
 
-## Cooperative scheduling (R2 — Option B from the "How CC:T does it" conversation, 2026-04-18)
+## Cooperative scheduling (R2)
 
-**Status:** Option A (worker thread + blocking sleep) lands in R1. Option B is the proper CC:T-style coroutine + event-queue model — deferred to R2.
+**Status:** Phase 1 + 2 SHIPPED (2026-04-18). Phase 3 (JS event support) deferred.
 
-### What R2 needs to add on top of R1
+### Phase 1 — shipped
+- `os.pullEvent([filter])` blocks the worker thread on a per-script event queue
+- `os.queueEvent(name, ...)` enqueues an event into the calling script's queue
+- `os.startTimer(secs)` returns a timer id; fires `"timer", id` event when due
+- Event sources: `monitor_touch`, `network_message`, `timer`
+- Routing via `EventDispatch.fireToChannel` walks `ChannelRegistry` for computers on the channel and offers into each running script's queue
+- Filter drops non-matching events (CC:T-style requeue is Phase 3)
 
-**1. Coroutine-driven script execution.** Each script runs as a Lua coroutine (Cobalt) / Rhino continuation. Custom yielding primitives:
-- `os.pullEvent(filter?)` — yields until next event matching filter
-- `os.startTimer(seconds)` — schedules a `timer` event
-- `os.queueEvent(name, ...)` — synthetic event from script
+### Phase 2 — shipped
+- Multi-script per Computer via separate worker threads (NOT Lua coroutines —
+  the original plan was coroutines, but a thread-per-script model ships in
+  much less code and is enough for the player-visible UX)
+- `BeScriptRunner` holds one foreground + a list of background handles
+- New shell commands: `bg <file>`, `jobs`, `fg <pid>`, `kill <pid>`
+- Foreground script output goes to the terminal; background output drained
+  and dropped (per-bg buffer is the next followup below)
 
-**2. Per-computer event queue.** Thread-safe queue of `Event(name, args)`. Populated by:
-- MC tick scheduler (timer events firing)
-- Monitor touches (becomes `monitor_touch` events instead of polled)
-- Redstone changes (when adapters land)
-- Any peripheral-emitted event (charger insert/remove, network packet rx, etc.)
+### Phase 3 — not yet started
 
-**3. Coroutine runtime loop.** Worker thread:
-- Resumes coroutine with current event (or initial nil)
-- Coroutine runs to next yield (e.g. `os.pullEvent`)
-- Worker parks until next event arrives in queue, or timer fires
-
-**4. CC:Tweaked compatibility.** Should support porting reactor monitor / quartermaster-style scripts with minor syntax tweaks. Match CC:T's event names where reasonable.
-
-### Why deferred
-
-R1's blocking-sleep model unblocks 90% of useful scripts in ~1 day. The full coroutine path is 2-3 days of careful threading + testing. Better to ship A early and iterate based on real-script feedback before committing to the coroutine model.
-
-### When to act
-
-When CC:T-script ports are the next-most-requested feature, OR when a player writes a real-time dashboard that runs into the 50ms-tick latency of A's marshaling model.
+- **JS `os.pullEvent`** — Rhino has continuations support but it's a mode
+  switch with implications for the rest of the JS host. Worth doing once
+  someone actually writes a JS automation script that needs events.
+- **CC:T-style filter requeue** — currently `os.pullEvent("x")` drops
+  intermediate non-matching events. CC:T queues them for the next
+  unfiltered pull. Worth fixing if a script breaks because of the difference.
+- **Per-background log viewer** — `tail <pid>` shell command would let
+  players check what a background script printed. Today bg output is dropped.
+- **Lua coroutine model (true cooperative scheduling)** — the original
+  R2 design. The current thread-per-script model wastes a thread per
+  background script. Coroutines would scale to dozens of bg scripts at
+  the cost of a meaningful refactor. Defer until someone actually runs
+  20+ scripts on one computer.

@@ -92,6 +92,7 @@ class ShellSession(
  *   - [kill] aborts the current run; no-op if none
  */
 interface ScriptRunner {
+    /** Start a foreground script. AlreadyRunning if foreground busy. */
     fun start(
         host: ScriptHost,
         source: String,
@@ -102,8 +103,33 @@ interface ScriptRunner {
         peripheralLister: (String?) -> List<Peripheral>,
         networkAccess: NetworkAccess = NetworkAccess.NOOP,
     ): StartResult
+
+    /** Start a background script. Always succeeds (no concurrency limit). */
+    fun startBackground(
+        host: ScriptHost,
+        source: String,
+        chunkName: String,
+        mount: WritableMount,
+        cwd: String,
+        peripheralFinder: (String) -> Peripheral?,
+        peripheralLister: (String?) -> List<Peripheral>,
+        networkAccess: NetworkAccess = NetworkAccess.NOOP,
+    ): StartResult.Started = throw UnsupportedOperationException("background scripts not supported by this runner")
+
+    /** Foreground only (or null). */
     fun current(): ScriptRunHandle?
+
+    /** Foreground + every background, in pid order. */
+    fun all(): List<ScriptRunHandle> = listOfNotNull(current())
+
+    /** Kill foreground only (legacy `kill` shell command — no args). */
     fun kill(): Boolean
+
+    /** Kill the script with this pid (foreground or background). */
+    fun killByPid(pid: Int): Boolean = false
+
+    /** Promote a background script to foreground. Only allowed when no foreground is running. */
+    fun moveToForeground(pid: Int): Boolean = false
 
     sealed interface StartResult {
         data class Started(val handle: ScriptRunHandle) : StartResult
@@ -126,7 +152,10 @@ interface ScriptRunner {
                 return StartResult.Started(h)
             }
             override fun current(): ScriptRunHandle? = null
+            override fun all(): List<ScriptRunHandle> = emptyList()
             override fun kill(): Boolean = false
+            override fun killByPid(pid: Int): Boolean = false
+            override fun moveToForeground(pid: Int): Boolean = false
         }
     }
 }

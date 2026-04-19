@@ -36,7 +36,7 @@ class PartFoundationsTest {
     ) : PartHost {
         override fun defaultLabel(typeId: String): String = "${typeId}_${faceId}"
         @Suppress("UNCHECKED_CAST")
-        override fun <C : Any> lookupCapability(key: CapabilityKey<C>): C? = capLookup(key) as? C
+        override fun <C : Any> lookupCapability(key: CapabilityKey<C>, sideOverride: String?): C? = capLookup(key) as? C
         override fun readRedstoneSignal(): Int = 0
         override fun writeRedstoneSignal(level: Int) {}
         override fun readAdjacentBlock(): com.brewingcoder.oc2.platform.peripheral.BlockPeripheral.BlockReadout? = null

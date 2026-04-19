@@ -13,11 +13,14 @@ import net.minecraft.core.Direction
  */
 object AdapterClientHandler {
     fun openPartConfigScreen(pos: BlockPos, face: Direction, kind: String, currentLabel: String) {
-        // Part-level channel comes from the client BE's part-on-face. Falls back
-        // to default if the BE/part has rolled off (would only happen mid-break).
+        // Per-part config (channel + accessSide + per-kind options) comes from
+        // the client BE; falls back to defaults if the BE/part has rolled off.
         val mc = Minecraft.getInstance()
         val be = mc.level?.getBlockEntity(pos) as? AdapterBlockEntity
-        val partChannel = be?.partOn(face)?.channelId ?: AdapterBlockEntity.DEFAULT_CHANNEL
-        mc.setScreen(PartConfigScreen(pos, face, kind, currentLabel, partChannel))
+        val part = be?.partOn(face)
+        val partChannel = part?.channelId ?: AdapterBlockEntity.DEFAULT_CHANNEL
+        val accessSide = (part as? com.brewingcoder.oc2.platform.parts.CapabilityBackedPart<*>)?.accessSide ?: ""
+        val options = part?.options?.toMap() ?: emptyMap()
+        mc.setScreen(PartConfigScreen(pos, face, kind, currentLabel, partChannel, accessSide, options))
     }
 }

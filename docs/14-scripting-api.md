@@ -8,18 +8,34 @@ OC2 ships two script hosts. Pick by file extension when invoking `run`:
 Both languages see the **same surface area** — `print`, `sleep`, `fs.*`,
 `peripheral.*`, `colors.*`. Idiomatic syntax differs but semantics match.
 
-## Execution model (R1)
+## Execution model
 
-- Scripts run on a **per-script worker thread**, not the server tick
-- One script at a time per Computer (`run` returns "already running" if blocked)
-- Use `kill` from the shell to abort the active script
+- Scripts run on **per-script worker threads** — never on the server tick
+- **Multi-script per Computer** — one foreground (terminal-attached) plus
+  any number of background scripts. `run` starts foreground; `bg` starts
+  background; `jobs` lists; `fg <pid>` promotes; `kill [pid]` terminates
 - `sleep(ms)` blocks the worker thread; **does not block** the server tick
+- `os.pullEvent` blocks until a matching event arrives — same mechanism;
+  worker parks, server keeps ticking
 - Peripheral method calls **marshal to the server thread** internally
-  (worker waits up to one tick — typical latency 0-50ms per call)
-- `print(...)` flushes live to the open Computer terminal each tick;
-  buffers when the screen is closed and replays on next open
-- **No cooperative scheduling** yet — `os.pullEvent` / event-driven scripts
-  land in R2 (see `12-followups.md`)
+  (worker waits up to one tick — typical latency 0–50ms per call)
+- `print(...)` from the foreground script flushes live to the open Computer
+  terminal each tick; buffers when the screen is closed and replays on next
+  open. Background-script print output is drained but **not displayed** today
+  (per-bg log viewing is on the followups list)
+
+## Computer power state
+
+A freshly placed Computer is **OFF** — the terminal shows
+`[ powered off — press Power ]` and shell commands are rejected. Click the
+Power button (top-left of the GUI) to turn on. Power state persists across
+save/load.
+
+- **Power off** kills any in-flight scripts (foreground + background) and
+  clears the recent output buffer
+- **Reset** (red square button) kills running scripts and wipes the terminal,
+  but leaves power state alone — useful for "stop the runaway script" without
+  fully shutting down. Greyed out when the computer is off.
 
 ## Globals
 
@@ -263,15 +279,30 @@ end
 ## Adapter parts
 
 The **Adapter** block hosts up to one part per face (6 max). Each installed
-part registers as its own peripheral on the adapter's wifi channel — scripts
-look them up via `peripheral.find(kind)` / `peripheral.list(kind)` exactly
-like a monitor.
+part registers as its own peripheral on **its own per-part wifi channel** —
+two parts on the same adapter can sit on different channels. Scripts look
+them up via `peripheral.find(kind)` / `peripheral.list(kind)` exactly like
+a monitor.
 
-To install: hold the part item, right-click the adapter face you want to
-attach it to. The part reads from / writes to whatever block sits on the
-*other* side of that face.
+### Install / configure / remove
 
-R1 ships four part kinds:
+| Action | Gesture |
+|---|---|
+| **Install** | Hold a part item, right-click the adapter face you want to attach it to |
+| **Configure** | Empty-hand right-click an installed part → opens the Part Settings GUI |
+| **Remove** | Sneak + empty-hand right-click an installed part → drops the part item back |
+
+The Part Settings GUI is the same panel for every part kind. It exposes:
+
+- **name** — script-facing label (`peripheral.find(...).name`); auto-generated like `inv_north_3` until edited
+- **channel** — per-part wifi channel; "▼" picks from channels of computers within 32 blocks
+- **access side** (inventory / fluid / energy only) — which side of the adjacent block to read from. `auto` = the install face's opposite (default); explicit pick (`up`, `down`, etc.) is useful for sided machines (furnace top = input slots, bottom = output, sides = fuel)
+- **kind-specific options** — see each kind's section below for what's exposed
+
+The adapter is just a physical mount — break it (or sneak-remove the part)
+and the items pop out toward the player.
+
+R1 ships **five** part kinds:
 
 ### `inventory` — wraps any `IItemHandler` (chests, barrels, hoppers, machines)
 
@@ -350,6 +381,14 @@ directly.
 | `rs.getInput()` | signal feeding INTO our face (0–15) |
 | `rs.getOutput()` | signal we're emitting OUT of our face (0–15) |
 | `rs.setOutput(level)` | set emission; sticky until changed |
+
+**Config GUI option — Inverted.** Toggle in the part settings panel. When ON:
+- `getInput()` returns `15 - actual_level` (powered face reads as 0; unpowered as 15)
+- `getOutput()` reflects what the script set, but the wire emits the inverse
+- `setOutput(15)` emits 0 to the wire; `setOutput(0)` emits 15
+
+Useful for "do X when NOT powered" patterns without writing the inversion in
+every script.
 
 ```lua
 local rs = peripheral.find("redstone")
@@ -435,21 +474,62 @@ if (m) {
 
 | Command | Notes |
 |---|---|
-| `run <file.lua\|file.js>` | start script asynchronously; returns immediately |
-| `ps` | show currently running script (pid, status) |
-| `kill` | abort the current script |
+| `run <file.lua\|file.js>` | start script in foreground; output goes to terminal |
+| `bg <file.lua\|file.js>` | start script in background; output drained but not shown |
+| `jobs` | list every running script (foreground + background) with `[pid] fg/bg state name` |
+| `ps` | foreground script only (alias for the first `jobs` row) |
+| `fg <pid>` | promote a background script to foreground (only when no fg is running) |
+| `kill` | terminate the foreground script |
+| `kill <pid>` | terminate any specific script by pid |
 
-Output buffers and replays — close the screen, click monitor buttons, reopen
-the screen, see the queued `print` lines.
+Foreground script output buffers and replays — close the screen, click
+monitor buttons, reopen the screen, see the queued `print` lines.
+
+## Common patterns
+
+**Event loop daemon (background-friendly):**
+```lua
+-- listen.lua — run via `bg listen.lua`. Reacts to network messages forever.
+while true do
+  local _, from, body = os.pullEvent("network_message")
+  -- do something with body
+end
+```
+
+**Periodic poll without busy-loop:**
+```lua
+local id = os.startTimer(5)
+while true do
+  local n, t = os.pullEvent("timer")
+  if t == id then
+    -- 5 seconds passed; do work
+    id = os.startTimer(5)  -- re-arm
+  end
+end
+```
+
+**Cross-computer chat:**
+```lua
+network.send(json.encode({ kind = "alert", msg = "intruder!" }))
+```
+
+**Item routing:**
+```lua
+local src = peripheral.find("inventory")  -- or peripheral.list and filter by name
+local dst = nil
+for _, p in ipairs(peripheral.list("inventory")) do
+  if p.name == "smelter_in" then dst = p end
+end
+src.push(1, dst, 8)   -- move 8 items from src slot 1 → dst (first fit)
+```
 
 ## Limitations (R1)
 
-- One script per Computer at a time
-- No cooperative scheduling — long tight loops without `sleep` will starve
-  other peripheral marshals (worker holds the queue slot)
-- No `os.pullEvent` / event-driven scripts (R2)
+- Background scripts have no per-script log viewer yet (drained + dropped)
+- `os.pullEvent` filter drops non-matching events instead of CC:T-style requeue
+- JS doesn't support `os.pullEvent` yet (Phase 3)
 - Globals don't persist across `run` invocations (each call: fresh VM)
 - Output buffer per closed-screen pos capped at 32 payloads
 - `sleep` is bounded to 60s per call
 
-See `12-followups.md` for the R2 plan that lifts most of these.
+See `12-followups.md` for the followup roadmap.
