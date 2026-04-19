@@ -140,6 +140,25 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
     fun partOn(face: Direction): Part? = parts[face]
     fun installedFaces(): Set<Direction> = parts.keys.toSet()
 
+    /**
+     * Update the label of the part on [face] (used by the Part Config GUI).
+     * Empty labels fall back to the auto-name. The peripheral wrapper is
+     * rebuilt each `asPeripheral()` call from the live label, so renames
+     * are picked up without touching [PartChannelRegistrant].
+     */
+    fun relabelPart(face: Direction, newLabel: String) {
+        val part = parts[face] ?: return
+        val finalLabel = if (newLabel.isBlank()) {
+            "${part.typeId}_${face.serializedName}_${adapterId}"
+        } else newLabel
+        if (part.label == finalLabel) return
+        OpenComputers2.LOGGER.info("adapter @ {} relabeled {} on face {} '{}' -> '{}'",
+            blockPos, part.typeId, face, part.label, finalLabel)
+        part.label = finalLabel
+        setChanged()
+        sync()
+    }
+
     /** Snapshot of (face → part typeId) for client-side rendering. Cheap; called per frame. */
     fun renderSnapshot(): Map<Direction, String> =
         parts.mapValues { it.value.typeId }

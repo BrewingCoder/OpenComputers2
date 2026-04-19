@@ -33,6 +33,12 @@ object OC2Payloads {
             RunCommandPayload.Companion::handle,
         )
 
+        registrar.playToServer(
+            LabelPartPayload.TYPE,
+            LabelPartPayload.STREAM_CODEC,
+            LabelPartPayload.Companion::handle,
+        )
+
         registrar.playToClient(
             TerminalOutputPayload.TYPE,
             TerminalOutputPayload.STREAM_CODEC,

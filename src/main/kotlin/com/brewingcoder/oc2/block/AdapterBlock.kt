@@ -1,10 +1,12 @@
 package com.brewingcoder.oc2.block
 
 import com.brewingcoder.oc2.block.parts.PartItem
+import com.brewingcoder.oc2.client.AdapterClientHandler
 import com.mojang.serialization.MapCodec
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.world.InteractionHand
+import net.minecraft.world.InteractionResult
 import net.minecraft.world.ItemInteractionResult
 import net.minecraft.world.entity.player.Player
 import net.minecraft.world.item.ItemStack
@@ -96,10 +98,13 @@ class AdapterBlock(properties: Properties) : BaseEntityBlock(properties) {
         hand: InteractionHand,
         hit: BlockHitResult,
     ): ItemInteractionResult {
-        if (level.isClientSide) return ItemInteractionResult.SUCCESS
-        val be = level.getBlockEntity(pos) as? AdapterBlockEntity
-            ?: return ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION
+        // Critical: PASS *before* the client-side short-circuit so empty-hand
+        // (or any non-PartItem) right-clicks fall through to useWithoutItem.
+        // Returning SUCCESS too early swallows the empty-hand path entirely.
         val partItem = stack.item as? PartItem
+            ?: return ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION
+        if (level.isClientSide) return ItemInteractionResult.sidedSuccess(true)
+        val be = level.getBlockEntity(pos) as? AdapterBlockEntity
             ?: return ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION
         // Hit point relative to block origin tells us which arm got clicked —
         // hit.direction is the face *normal* of whatever sub-shape was hit, but
@@ -115,6 +120,28 @@ class AdapterBlock(properties: Properties) : BaseEntityBlock(properties) {
             stack.shrink(1)
         }
         return ItemInteractionResult.sidedSuccess(level.isClientSide)
+    }
+
+    /**
+     * Empty-hand right-click → open the Part Config GUI for the part on the
+     * clicked arm. No-op if no part on that face. Client-side opens the
+     * screen; the server short-circuits with SUCCESS to consume the click.
+     */
+    override fun useWithoutItem(
+        state: BlockState,
+        level: Level,
+        pos: BlockPos,
+        player: Player,
+        hit: BlockHitResult,
+    ): InteractionResult {
+        val be = level.getBlockEntity(pos) as? AdapterBlockEntity
+            ?: return InteractionResult.PASS
+        val face = faceFromHit(hit, pos) ?: hit.direction
+        val part = be.partOn(face) ?: return InteractionResult.PASS
+        if (level.isClientSide) {
+            AdapterClientHandler.openPartConfigScreen(pos, face, part.typeId, part.label)
+        }
+        return InteractionResult.SUCCESS
     }
 
     override fun neighborChanged(
