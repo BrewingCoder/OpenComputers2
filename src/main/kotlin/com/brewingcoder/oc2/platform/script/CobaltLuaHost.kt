@@ -1,6 +1,7 @@
 package com.brewingcoder.oc2.platform.script
 
 import com.brewingcoder.oc2.platform.os.ShellOutput
+import com.brewingcoder.oc2.platform.peripheral.BlockPeripheral
 import com.brewingcoder.oc2.platform.peripheral.EnergyPeripheral
 import com.brewingcoder.oc2.platform.peripheral.FluidPeripheral
 import com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral
@@ -188,7 +189,41 @@ class CobaltLuaHost : ScriptHost {
         is RedstonePeripheral -> wrapRedstone(p)
         is FluidPeripheral -> wrapFluid(p)
         is EnergyPeripheral -> wrapEnergy(p)
+        is BlockPeripheral -> wrapBlock(p)
         else -> Constants.NIL
+    }
+
+    private fun wrapBlock(b: BlockPeripheral): LuaTable {
+        val t = LuaTable()
+        t.rawset("kind", ValueFactory.valueOf(b.kind))
+        t.rawset("name", ValueFactory.valueOf(b.name))
+        t.rawset("read", fn {
+            val r = b.read() ?: return@fn Constants.NIL
+            val o = LuaTable()
+            o.rawset("id", ValueFactory.valueOf(r.id))
+            o.rawset("isAir", ValueFactory.valueOf(r.isAir))
+            o.rawset("lightLevel", ValueFactory.valueOf(r.lightLevel))
+            o.rawset("redstonePower", ValueFactory.valueOf(r.redstonePower))
+            o.rawset("hardness", ValueFactory.valueOf(r.hardness.toDouble()))
+            val pos = LuaTable()
+            pos.rawset("x", ValueFactory.valueOf(r.pos.first))
+            pos.rawset("y", ValueFactory.valueOf(r.pos.second))
+            pos.rawset("z", ValueFactory.valueOf(r.pos.third))
+            o.rawset("pos", pos)
+            if (r.nbt != null) o.rawset("nbt", ValueFactory.valueOf(r.nbt))
+            o
+        })
+        t.rawset("harvest", fn { args ->
+            val targetTable = args.arg(1) as? LuaTable
+            val target = targetTable?.let { invHandles[it] }
+            val moved = b.harvest(target)
+            val arr = LuaTable()
+            for ((i, snap) in moved.withIndex()) {
+                arr.rawset(i + 1, itemSnapshotToTable(snap))
+            }
+            arr
+        })
+        return t
     }
 
     private fun wrapFluid(fl: FluidPeripheral): LuaTable {
@@ -218,6 +253,10 @@ class CobaltLuaHost : ScriptHost {
             val amount = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else 1000
             ValueFactory.valueOf(fl.pull(src, amount))
         })
+        t.rawset("destroy", fn { args ->
+            val amount = args.arg(1).toInteger().toInt()
+            ValueFactory.valueOf(fl.destroy(amount))
+        })
         return t
     }
 
@@ -246,6 +285,10 @@ class CobaltLuaHost : ScriptHost {
             val src = (args.arg(1) as? LuaTable)?.let { energyHandles[it] } ?: return@fn ValueFactory.valueOf(0)
             val amount = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else Int.MAX_VALUE
             ValueFactory.valueOf(en.pull(src, amount))
+        })
+        t.rawset("destroy", fn { args ->
+            val amount = args.arg(1).toInteger().toInt()
+            ValueFactory.valueOf(en.destroy(amount))
         })
         return t
     }
@@ -428,6 +471,11 @@ class CobaltLuaHost : ScriptHost {
         })
         t.rawset("find", fn { args ->
             ValueFactory.valueOf(inv.find(args.arg(1).toString()))
+        })
+        t.rawset("destroy", fn { args ->
+            val slot = args.arg(1).toInteger().toInt()
+            val count = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else Int.MAX_VALUE
+            ValueFactory.valueOf(inv.destroy(slot, count))
         })
         t.rawset("push", fn { args ->
             val slot = args.arg(1).toInteger().toInt()

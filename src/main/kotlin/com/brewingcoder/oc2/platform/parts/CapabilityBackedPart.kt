@@ -27,6 +27,7 @@ abstract class CapabilityBackedPart<C : Any>(
 ) : Part {
 
     override var label: String = ""
+    override var channelId: String = DEFAULT_CHANNEL
 
     private var cachedCapability: C? = null
 
@@ -56,9 +57,15 @@ abstract class CapabilityBackedPart<C : Any>(
 
     override fun saveNbt(out: Part.NbtWriter) {
         out.putString("label", label)
+        out.putString("channelId", channelId)
     }
 
     override fun loadNbt(input: Part.NbtReader) {
         if (input.has("label")) label = input.getString("label")
+        if (input.has("channelId")) channelId = input.getString("channelId")
+    }
+
+    companion object {
+        const val DEFAULT_CHANNEL: String = "default"
     }
 }

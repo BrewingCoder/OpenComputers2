@@ -34,9 +34,15 @@ object OC2Payloads {
         )
 
         registrar.playToServer(
-            LabelPartPayload.TYPE,
-            LabelPartPayload.STREAM_CODEC,
-            LabelPartPayload.Companion::handle,
+            UpdatePartConfigPayload.TYPE,
+            UpdatePartConfigPayload.STREAM_CODEC,
+            UpdatePartConfigPayload.Companion::handle,
+        )
+
+        registrar.playToServer(
+            ComputerControlPayload.TYPE,
+            ComputerControlPayload.STREAM_CODEC,
+            ComputerControlPayload.Companion::handle,
         )
 
         registrar.playToClient(

@@ -43,6 +43,14 @@ interface InventoryPeripheral : Peripheral {
     /** Find the first slot matching [itemId] (e.g. `"minecraft:diamond"`). 1-indexed; -1 if none. */
     fun find(itemId: String): Int
 
+    /**
+     * Permanently void up to [count] items from `this[slot]`. Returns the
+     * number actually destroyed. Atomic — no item entity spawned, no copy
+     * made; the items cease to exist. Honors the OC2 anti-dupe rule
+     * (no create-from-nothing path; this is only the *destroy* leg).
+     */
+    fun destroy(slot: Int, count: Int): Int
+
     /** Lightweight item snapshot — id + count. NBT/components deferred (R2). */
     data class ItemSnapshot(val id: String, val count: Int)
 }

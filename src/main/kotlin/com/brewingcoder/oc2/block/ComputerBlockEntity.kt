@@ -23,6 +23,9 @@ import com.brewingcoder.oc2.platform.storage.WritableMount
 import com.brewingcoder.oc2.storage.OC2ServerContext
 import net.minecraft.core.BlockPos
 import net.minecraft.core.HolderLookup
+import net.minecraft.network.protocol.Packet
+import net.minecraft.network.protocol.game.ClientGamePacketListener
+import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.state.BlockState
@@ -51,6 +54,15 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
 
     /** Wifi channel this Computer publishes on. Matches with adapters of the same channel. */
     override var channelId: String = DEFAULT_CHANNEL
+        private set
+
+    /**
+     * Power state. Newly placed computers are OFF — the screen shows a "press
+     * power" prompt and shell commands are rejected. Power state survives
+     * save/load (the player can shut down a script-running computer, walk away,
+     * come back later, and it'll still be off).
+     */
+    var powered: Boolean = false
         private set
 
     /** Block position translated to platform-layer [Position] — exposed via [ChannelRegistrant]. */
@@ -266,6 +278,7 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
      * it back as a [com.brewingcoder.oc2.network.TerminalOutputPayload].
      */
     fun executeShellCommand(input: String, originator: UUID? = null): ShellResult {
+        if (!powered) return ShellResult(listOf("(computer is off — press Power)"), false, 1)
         // Track the originator so any newly-spawned script's output gets routed
         // back to them. Only update if the previous originator is gone — keeps
         // a still-running script's output flowing to its initiator if a different
@@ -288,6 +301,38 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
             scriptRunner = scriptRunner,
         ).also { shellSession = it }
         return SHELL.execute(input, session)
+    }
+
+    /**
+     * Toggle power. Powering off kills any in-flight script and clears the
+     * recent-output buffer (the next power-on starts with a clean terminal).
+     * Powering on is a no-op beyond setting the flag — the shell becomes
+     * available for input again.
+     */
+    fun setPowered(on: Boolean) {
+        if (powered == on) return
+        powered = on
+        if (!on) {
+            scriptRunner.kill()
+            synchronized(recentOutput) { recentOutput.clear() }
+            // Tell the open client screen to wipe its terminal too.
+            sendOutputToOriginator(emptyList(), clearFirst = true)
+        }
+        OpenComputers2.LOGGER.info("computer @ {} powered {}", blockPos, if (on) "ON" else "OFF")
+        setChanged()
+        sync()
+    }
+
+    /**
+     * Soft reset — kill the running script + wipe both server and client
+     * terminal buffers. Power state stays unchanged. No-op when off.
+     */
+    fun reset() {
+        if (!powered) return
+        scriptRunner.kill()
+        synchronized(recentOutput) { recentOutput.clear() }
+        sendOutputToOriginator(listOf("[reset]"), clearFirst = true)
+        OpenComputers2.LOGGER.info("computer @ {} reset", blockPos)
     }
 
     /**
@@ -348,11 +393,39 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
             if (computerId != ID_UNASSIGNED) registerWithDiagnostics()
         }
         setChanged()  // marks chunk dirty so NBT gets persisted
+        sync()        // pushes the new channel to the client BE so the GUI re-opens with it
+    }
+
+    // ---------- client sync ----------
+
+    override fun getUpdateTag(registries: HolderLookup.Provider): CompoundTag {
+        val tag = CompoundTag()
+        saveAdditional(tag, registries)
+        return tag
+    }
+
+    override fun handleUpdateTag(tag: CompoundTag, registries: HolderLookup.Provider) {
+        loadAdditional(tag, registries)
+    }
+
+    override fun getUpdatePacket(): Packet<ClientGamePacketListener>? =
+        ClientboundBlockEntityDataPacket.create(this)
+
+    /**
+     * Push the latest BE state to clients tracking this chunk. flag 2 means
+     * "clients only, no neighbor cascade" — same lesson as Adapter/Monitor
+     * (avoid save-time cascades that hung the server in earlier work).
+     */
+    private fun sync() {
+        val lvl = level ?: return
+        if (lvl.isClientSide) return
+        lvl.sendBlockUpdated(blockPos, blockState, blockState, 2)
     }
 
     override fun saveAdditional(tag: CompoundTag, registries: HolderLookup.Provider) {
         super.saveAdditional(tag, registries)
         tag.putString(NBT_CHANNEL, channelId)
+        tag.putBoolean(NBT_POWERED, powered)
         if (computerId != ID_UNASSIGNED) tag.putInt(NBT_COMPUTER_ID, computerId)
     }
 
@@ -360,6 +433,9 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
         super.loadAdditional(tag, registries)
         if (tag.contains(NBT_CHANNEL)) {
             channelId = tag.getString(NBT_CHANNEL)
+        }
+        if (tag.contains(NBT_POWERED)) {
+            powered = tag.getBoolean(NBT_POWERED)
         }
         if (tag.contains(NBT_COMPUTER_ID)) {
             computerId = tag.getInt(NBT_COMPUTER_ID)
@@ -376,6 +452,7 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
         const val RECENT_OUTPUT_CAP: Int = 200
         private const val NBT_CHANNEL = "channelId"
         private const val NBT_COMPUTER_ID = "computerId"
+        private const val NBT_POWERED = "powered"
 
         /** Stateless command registry, shared across every computer in the world. */
         private val SHELL: Shell = DefaultCommands.build()

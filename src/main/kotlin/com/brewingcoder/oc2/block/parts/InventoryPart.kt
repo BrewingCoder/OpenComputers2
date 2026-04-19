@@ -25,9 +25,14 @@ class InventoryPart : CapabilityBackedPart<IItemHandler>(TYPE_ID, PartCapability
 
     override fun wrapAsPeripheral(cap: IItemHandler): Peripheral = Wrapper(cap, label)
 
-    /** [InventoryPeripheral] implementation backed by a live IItemHandler. */
-    private class Wrapper(
-        private val handler: IItemHandler,
+    /**
+     * [InventoryPeripheral] implementation backed by a live IItemHandler.
+     * Exposed at `internal` so [BlockPartOps] (and future siblings that need
+     * to insert raw [ItemStack]s) can fish the handler back out without
+     * polluting the platform interface.
+     */
+    internal class Wrapper(
+        internal val handler: IItemHandler,
         override val name: String,
     ) : InventoryPeripheral {
         override fun size(): Int = handler.slots
@@ -81,6 +86,14 @@ class InventoryPart : CapabilityBackedPart<IItemHandler>(TYPE_ID, PartCapability
                 if (idFor(s) == itemId) return i + 1
             }
             return -1
+        }
+
+        override fun destroy(slot: Int, count: Int): Int {
+            val idx = slot - 1
+            if (idx !in 0 until handler.slots) return 0
+            // Single extract is the destroy. No insert anywhere — the items vanish.
+            val extracted = handler.extractItem(idx, count.coerceAtLeast(0), /* simulate = */ false)
+            return extracted.count
         }
 
         private fun tryInsertAt(h: IItemHandler, idx: Int, stack: ItemStack): ItemStack {

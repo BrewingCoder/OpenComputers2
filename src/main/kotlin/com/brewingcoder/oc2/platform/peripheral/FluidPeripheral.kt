@@ -28,6 +28,13 @@ interface FluidPeripheral : Peripheral {
     /** Inverse — pull from [source] into our first available tank. */
     fun pull(source: FluidPeripheral, amount: Int = 1000): Int
 
+    /**
+     * Permanently void up to [amount] mB from any tank. Returns mB actually
+     * destroyed. The fluid does not become a world entity, does not enter
+     * another handler — it simply ceases to exist.
+     */
+    fun destroy(amount: Int): Int
+
     /** Lightweight snapshot — fluid id + amount in mB. */
     data class FluidSnapshot(val id: String, val amount: Int)
 }

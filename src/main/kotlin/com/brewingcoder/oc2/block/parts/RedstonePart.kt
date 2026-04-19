@@ -17,6 +17,7 @@ import com.brewingcoder.oc2.platform.peripheral.RedstonePeripheral
 class RedstonePart : Part {
     override val typeId: String = TYPE_ID
     override var label: String = ""
+    override var channelId: String = "default"
 
     private var output: Int = 0
 
@@ -48,11 +49,13 @@ class RedstonePart : Part {
 
     override fun saveNbt(out: Part.NbtWriter) {
         out.putString("label", label)
+        out.putString("channelId", channelId)
         out.putInt("output", output)
     }
 
     override fun loadNbt(input: Part.NbtReader) {
         if (input.has("label")) label = input.getString("label")
+        if (input.has("channelId")) channelId = input.getString("channelId")
         if (input.has("output")) output = input.getInt("output").coerceIn(0, 15)
     }
 

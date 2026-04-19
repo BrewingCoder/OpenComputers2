@@ -44,6 +44,12 @@ class InventoryBindingTest {
         override fun pull(source: InventoryPeripheral, slot: Int, count: Int, targetSlot: Int?): Int {
             return (source as FakeInv).push(slot, this, count, targetSlot)
         }
+        override fun destroy(slot: Int, count: Int): Int {
+            val src = stacks.getOrNull(slot - 1) ?: return 0
+            val killed = count.coerceAtMost(src.count)
+            stacks[slot - 1] = if (src.count - killed <= 0) null else ItemSnapshot(src.id, src.count - killed)
+            return killed
+        }
     }
 
     /** Env that returns predefined inventory peripherals on `peripheral.list("inventory")`. */
@@ -116,6 +122,21 @@ class InventoryBindingTest {
         """.trimIndent(), "push.lua", FakeEnv(mount(), "", out, listOf(src, dst)))
         r.ok shouldBe true
         out.lines shouldBe listOf("4", "6", "minecraft:diamond\t4")
+    }
+
+    @Test
+    fun `lua destroy voids items without sending them anywhere`() {
+        val a = FakeInv("a", 3).apply { setSlot(1, ItemSnapshot("minecraft:diamond", 10)) }
+        val out = CapturingOut()
+        val r = CobaltLuaHost().eval("""
+            local inv = peripheral.find("inventory")
+            print(inv.destroy(1, 4))     -- killed
+            print(inv.getItem(1).count)   -- 6 left
+            print(inv.destroy(1, 99))    -- only 6 left, kills them all
+            print(inv.getItem(1) == nil) -- empty now
+        """.trimIndent(), "destroy.lua", FakeEnv(mount(), "", out, listOf(a)))
+        r.ok shouldBe true
+        out.lines shouldBe listOf("4", "6", "6", "true")
     }
 
     @Test

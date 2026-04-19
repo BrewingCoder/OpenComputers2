@@ -1,6 +1,7 @@
 package com.brewingcoder.oc2.platform.script
 
 import com.brewingcoder.oc2.platform.os.ShellOutput
+import com.brewingcoder.oc2.platform.peripheral.BlockPeripheral
 import com.brewingcoder.oc2.platform.peripheral.EnergyPeripheral
 import com.brewingcoder.oc2.platform.peripheral.FluidPeripheral
 import com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral
@@ -117,7 +118,41 @@ class RhinoJSHost : ScriptHost {
         is RedstonePeripheral -> wrapRedstone(p, parent)
         is FluidPeripheral -> wrapFluid(p, parent)
         is EnergyPeripheral -> wrapEnergy(p, parent)
+        is BlockPeripheral -> wrapBlock(p, parent)
         else -> null
+    }
+
+    private fun wrapBlock(b: BlockPeripheral, parent: Scriptable): ScriptableObject {
+        val obj = NativeObject()
+        ScriptableObject.putProperty(obj, "kind", b.kind)
+        ScriptableObject.putProperty(obj, "name", b.name)
+        defineFsMethod(obj, "read", parent, 0) { _ ->
+            val r = b.read() ?: return@defineFsMethod null
+            val o = NativeObject()
+            ScriptableObject.putProperty(o, "id", r.id)
+            ScriptableObject.putProperty(o, "isAir", r.isAir)
+            ScriptableObject.putProperty(o, "lightLevel", r.lightLevel)
+            ScriptableObject.putProperty(o, "redstonePower", r.redstonePower)
+            ScriptableObject.putProperty(o, "hardness", r.hardness.toDouble())
+            val pos = NativeObject()
+            ScriptableObject.putProperty(pos, "x", r.pos.first)
+            ScriptableObject.putProperty(pos, "y", r.pos.second)
+            ScriptableObject.putProperty(pos, "z", r.pos.third)
+            ScriptableObject.putProperty(o, "pos", pos)
+            if (r.nbt != null) ScriptableObject.putProperty(o, "nbt", r.nbt)
+            o
+        }
+        defineFsMethod(obj, "harvest", parent, 1) { args ->
+            val targetObj = args.getOrNull(0) as? ScriptableObject
+            val target = targetObj?.let { invHandles[it] }
+            val moved = b.harvest(target)
+            val arr = cx().newArray(parent, moved.size)
+            for ((i, snap) in moved.withIndex()) {
+                arr.put(i, arr, itemSnapshotToJs(snap))
+            }
+            arr
+        }
+        return obj
     }
 
     private fun wrapFluid(fl: FluidPeripheral, parent: Scriptable): ScriptableObject {
@@ -145,6 +180,10 @@ class RhinoJSHost : ScriptHost {
             val src = (args.getOrNull(0) as? ScriptableObject)?.let { fluidHandles[it] } ?: return@defineFsMethod 0
             val amount = (args.getOrNull(1) as? Number)?.toInt() ?: 1000
             fl.pull(src, amount)
+        }
+        defineFsMethod(obj, "destroy", parent, 1) { args ->
+            val amount = (args.getOrNull(0) as? Number)?.toInt() ?: 0
+            fl.destroy(amount)
         }
         return obj
     }
@@ -174,6 +213,10 @@ class RhinoJSHost : ScriptHost {
             val src = (args.getOrNull(0) as? ScriptableObject)?.let { energyHandles[it] } ?: return@defineFsMethod 0
             val amount = (args.getOrNull(1) as? Number)?.toInt() ?: Int.MAX_VALUE
             en.pull(src, amount)
+        }
+        defineFsMethod(obj, "destroy", parent, 1) { args ->
+            val amount = (args.getOrNull(0) as? Number)?.toInt() ?: 0
+            en.destroy(amount)
         }
         return obj
     }
@@ -213,6 +256,11 @@ class RhinoJSHost : ScriptHost {
             arr
         }
         defineFsMethod(obj, "find", parent, 1) { args -> inv.find(asString(args, 0)) }
+        defineFsMethod(obj, "destroy", parent, 2) { args ->
+            val slot = (args.getOrNull(0) as? Number)?.toInt() ?: 0
+            val count = (args.getOrNull(1) as? Number)?.toInt() ?: Int.MAX_VALUE
+            inv.destroy(slot, count)
+        }
         defineFsMethod(obj, "push", parent, 4) { args ->
             val slot = (args.getOrNull(0) as? Number)?.toInt() ?: 0
             val targetObj = args.getOrNull(1) as? ScriptableObject

@@ -32,6 +32,7 @@ object ModTabs {
                 output.accept(ModItems.REDSTONE_PART)
                 output.accept(ModItems.FLUID_PART)
                 output.accept(ModItems.ENERGY_PART)
+                output.accept(ModItems.BLOCK_PART)
             }
             .build()
     }

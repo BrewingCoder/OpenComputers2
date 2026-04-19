@@ -1,6 +1,7 @@
 package com.brewingcoder.oc2.block
 
 import com.brewingcoder.oc2.OpenComputers2
+import com.brewingcoder.oc2.block.parts.BlockPartOps
 import com.brewingcoder.oc2.block.parts.PartCapabilityKeys
 import com.brewingcoder.oc2.block.parts.PartChannelRegistrant
 import com.brewingcoder.oc2.platform.ChannelRegistry
@@ -43,9 +44,12 @@ import net.minecraft.world.level.block.state.BlockState
 class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
     BlockEntity(ModBlockEntities.ADAPTER.get(), pos, state) {
 
-    /** Wifi channel the adapter publishes parts on. */
-    var channelId: String = DEFAULT_CHANNEL
-        private set
+    /**
+     * Legacy adapter-level channel — kept ONLY to migrate older NBT to the
+     * per-part channel model. On load, this value seeds any part that doesn't
+     * yet have its own channelId. After migration it's never read again.
+     */
+    private var legacyChannel: String? = null
 
     /** Stable per-adapter id used for auto-naming. Assigned lazily on first install. */
     private var adapterId: Int = ID_UNASSIGNED
@@ -66,13 +70,24 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
         if (registryShouldTrack) {
             // Rehydrate any parts loaded from NBT — they exist in `parts` but
             // weren't fully initialized (no PartHost while level was null).
+            // Migration: any part without its own channel inherits the legacy
+            // adapter channel (if NBT had one).
+            val migrate = legacyChannel
+            if (migrate != null) {
+                for (part in parts.values) {
+                    if (part.channelId.isBlank() || part.channelId == "default") {
+                        part.channelId = migrate
+                    }
+                }
+                legacyChannel = null
+            }
             for ((face, part) in parts) {
                 part.onAttach(host(face))
                 registerPart(face, part)
             }
             recomputeConnections()
-            OpenComputers2.LOGGER.info("adapter @ {} loaded with {} parts on channel '{}'",
-                blockPos, parts.size, channelId)
+            OpenComputers2.LOGGER.info("adapter @ {} loaded with {} parts (per-part channels)",
+                blockPos, parts.size)
         }
     }
 
@@ -163,17 +178,21 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
     fun renderSnapshot(): Map<Direction, String> =
         parts.mapValues { it.value.typeId }
 
-    fun setChannel(newChannel: String) {
-        if (newChannel == channelId) return
-        if (registryShouldTrack) {
-            // Re-register every part on the new channel atomically.
-            for (face in parts.keys) unregisterPart(face)
-            channelId = newChannel
-            for ((face, part) in parts) registerPart(face, part)
-        } else {
-            channelId = newChannel
-        }
+    /**
+     * Update the channel of the part on [face]. Unregisters the old
+     * [PartChannelRegistrant] (which was indexed under the old channel) and
+     * re-registers under the new one.
+     */
+    fun setPartChannel(face: Direction, newChannel: String) {
+        val part = parts[face] ?: return
+        if (part.channelId == newChannel) return
+        OpenComputers2.LOGGER.info("adapter @ {} retuned {} on face {} '{}' -> '{}'",
+            blockPos, part.typeId, face, part.channelId, newChannel)
+        if (registryShouldTrack) unregisterPart(face)
+        part.channelId = newChannel
+        if (registryShouldTrack) registerPart(face, part)
         setChanged()
+        sync()
     }
 
     /**
@@ -206,7 +225,7 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
 
     private fun registerPart(face: Direction, part: Part) {
         val r = PartChannelRegistrant(
-            channelId = channelId,
+            channelId = part.channelId,
             location = Position(blockPos.x, blockPos.y, blockPos.z),
             part = part,
         )
@@ -244,6 +263,14 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
             // Stub for now — RedstonePart write path lands with that part.
             // Adapter block state doesn't carry per-face signal yet.
         }
+
+        override fun readAdjacentBlock(): com.brewingcoder.oc2.platform.peripheral.BlockPeripheral.BlockReadout? =
+            BlockPartOps.read(level, blockPos, face)
+
+        override fun harvestAdjacentBlock(
+            target: com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral?,
+        ): List<com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral.ItemSnapshot> =
+            BlockPartOps.harvest(level, blockPos, face, target)
     }
 
     private fun ensureAdapterId() {
@@ -255,7 +282,8 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
 
     override fun saveAdditional(tag: CompoundTag, registries: HolderLookup.Provider) {
         super.saveAdditional(tag, registries)
-        tag.putString(NBT_CHANNEL, channelId)
+        // Per-part channels — adapter has no channel of its own anymore.
+        // Legacy NBT_CHANNEL key is no longer written.
         if (adapterId != ID_UNASSIGNED) tag.putInt(NBT_ADAPTER_ID, adapterId)
         val partsTag = CompoundTag()
         for ((face, part) in parts) {
@@ -271,7 +299,9 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
 
     override fun loadAdditional(tag: CompoundTag, registries: HolderLookup.Provider) {
         super.loadAdditional(tag, registries)
-        if (tag.contains(NBT_CHANNEL)) channelId = tag.getString(NBT_CHANNEL)
+        // Capture legacy adapter-level channel so [onLoad] can migrate it down
+        // into any per-part channelId that's still defaulted.
+        if (tag.contains(NBT_CHANNEL)) legacyChannel = tag.getString(NBT_CHANNEL)
         if (tag.contains(NBT_ADAPTER_ID)) adapterId = tag.getInt(NBT_ADAPTER_ID)
         parts.clear()
         if (tag.contains(NBT_PARTS)) {
@@ -335,10 +365,11 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
     }
 
     companion object {
+        /** Default channel for any newly installed part. Adapter no longer has its own. */
         const val DEFAULT_CHANNEL = "default"
         const val ID_UNASSIGNED: Int = -1
 
-        private const val NBT_CHANNEL = "channelId"
+        private const val NBT_CHANNEL = "channelId"     // legacy — read for migration only
         private const val NBT_ADAPTER_ID = "adapterId"
         private const val NBT_PARTS = "parts"
         private const val NBT_PART_TYPE = "type"

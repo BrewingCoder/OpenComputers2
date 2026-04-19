@@ -38,6 +38,26 @@ interface PartHost {
 
     /** Set the redstone signal this part emits onto its face. */
     fun writeRedstoneSignal(level: Int)
+
+    /**
+     * Snapshot of the adjacent block (the one this part faces). Null if off-world.
+     * Used by [com.brewingcoder.oc2.block.parts.BlockPart]. Server-thread safe
+     * — implementations marshal internally.
+     */
+    fun readAdjacentBlock(): com.brewingcoder.oc2.platform.peripheral.BlockPeripheral.BlockReadout?
+
+    /**
+     * Break the adjacent block, route its loot table drops into [target] (an
+     * [com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral]) — anything
+     * that doesn't fit drops on the ground at the broken block's position.
+     * Returns snapshots of items routed *into* the inventory.
+     *
+     * Server-thread only; impls marshal internally so script callers (running on
+     * worker threads) don't need to.
+     */
+    fun harvestAdjacentBlock(
+        target: com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral?,
+    ): List<com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral.ItemSnapshot>
 }
 
 /**

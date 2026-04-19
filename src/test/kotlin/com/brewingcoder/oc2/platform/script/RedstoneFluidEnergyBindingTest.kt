@@ -42,6 +42,12 @@ class RedstoneFluidEnergyBindingTest {
             return moved
         }
         override fun pull(source: FluidPeripheral, amount: Int): Int = (source as FakeFluid).push(this, amount)
+        override fun destroy(amount: Int): Int {
+            val cur = buf[0] ?: return 0
+            val killed = amount.coerceAtMost(cur.amount)
+            buf[0] = if (cur.amount - killed <= 0) null else FluidSnapshot(cur.id, cur.amount - killed)
+            return killed
+        }
     }
 
     private class FakeEnergy(override val name: String, var current: Int, val max: Int) : EnergyPeripheral {
@@ -55,6 +61,11 @@ class RedstoneFluidEnergyBindingTest {
             return moved
         }
         override fun push(target: EnergyPeripheral, amount: Int): Int = (target as FakeEnergy).pull(this, amount)
+        override fun destroy(amount: Int): Int {
+            val killed = amount.coerceAtMost(current)
+            current -= killed
+            return killed
+        }
     }
 
     private class FakeEnv(
@@ -142,6 +153,32 @@ class RedstoneFluidEnergyBindingTest {
     }
 
     // ---------- Energy ----------
+
+    @Test
+    fun `lua fluid destroy voids without sending anywhere`() {
+        val src = FakeFluid("src", 5000).apply { set(FluidSnapshot("minecraft:lava", 1000)) }
+        val out = CapturingOut()
+        val r = CobaltLuaHost().eval("""
+            local fl = peripheral.find("fluid")
+            print(fl.destroy(400))             -- 400 mB destroyed
+            print(fl.getFluid(1).amount)        -- 600 mB left
+        """.trimIndent(), "fldestroy.lua", FakeEnv(mount(), "", out, listOf(src)))
+        r.ok shouldBe true
+        out.lines shouldBe listOf("400", "600")
+    }
+
+    @Test
+    fun `lua energy destroy voids FE`() {
+        val en = FakeEnergy("en", current = 1000, max = 5000)
+        val out = CapturingOut()
+        val r = CobaltLuaHost().eval("""
+            local e = peripheral.find("energy")
+            print(e.destroy(300))   -- 300 FE destroyed
+            print(e.stored())       -- 700 FE left
+        """.trimIndent(), "endestroy.lua", FakeEnv(mount(), "", out, listOf(en)))
+        r.ok shouldBe true
+        out.lines shouldBe listOf("300", "700")
+    }
 
     @Test
     fun `lua energy push transfers FE`() {

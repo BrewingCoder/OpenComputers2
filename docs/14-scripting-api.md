@@ -250,6 +250,7 @@ R1 ships four part kinds:
 | `inv.find(itemId)` | first slot containing [itemId] (`"minecraft:diamond"`), or -1 |
 | `inv.push(slot, target [, count [, targetSlot]])` | move items → returns count moved |
 | `inv.pull(source, slot [, count [, targetSlot]])` | inverse of push |
+| `inv.destroy(slot [, count])` | void items → returns count destroyed |
 
 ```lua
 local chest = peripheral.find("inventory")
@@ -269,6 +270,7 @@ end
 | `fl.list()` | snapshots for every tank |
 | `fl.push(target [, amount])` | move mB → returns mB moved |
 | `fl.pull(source [, amount])` | inverse |
+| `fl.destroy(amount)` | void fluid → returns mB destroyed |
 
 ### `energy` — wraps any `IEnergyStorage` (FE buffers, generators)
 
@@ -278,6 +280,32 @@ end
 | `en.capacity()` | max FE |
 | `en.push(target [, amount])` | transfer FE → returns amount moved |
 | `en.pull(source [, amount])` | inverse |
+| `en.destroy(amount)` | void FE → returns amount destroyed |
+
+### `block` — read adjacent block state / break-and-route the block
+
+Reads the block sitting in front of this face (id, NBT, light, redstone power,
+hardness, position). Can also break the block and route its loot into a
+target inventory.
+
+| Method | Notes |
+|---|---|
+| `b.read()` | `{id, isAir, lightLevel, redstonePower, hardness, pos: {x,y,z}, nbt?}` or nil/null |
+| `b.harvest(target)` | break the block; route loot into `target` (an inventory peripheral). Items that don't fit drop on the ground. Returns the array of `{id, count}` snapshots routed to `target`. |
+
+Anti-dupe: `harvest` is a *move* — the block ceases to exist atomically with
+the items appearing. No copy path. Pass `nil` / `null` as the target to break
+the block with all loot dropping on the ground (purely destructive).
+
+```lua
+local b = peripheral.find("block")
+local r = b.read()
+print(r.id, r.lightLevel, r.redstonePower)
+if r.id == "minecraft:stone" then
+  local inv = peripheral.find("inventory")
+  for _, s in ipairs(b.harvest(inv)) do print("got", s.id, s.count) end
+end
+```
 
 ### `redstone` — read input / write output on this face
 

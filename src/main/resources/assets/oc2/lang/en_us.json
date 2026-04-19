@@ -7,6 +7,7 @@
   "item.oc2.redstone_part": "Redstone Part",
   "item.oc2.fluid_part": "Fluid Part",
   "item.oc2.energy_part": "Energy Part",
+  "item.oc2.block_part": "Block Part",
 
   "screen.oc2.computer": "Computer",
   "screen.oc2.part_config": "Part Settings",

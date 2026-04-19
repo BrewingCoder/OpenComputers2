@@ -25,4 +25,10 @@ interface EnergyPeripheral : Peripheral {
 
     /** Push up to [amount] FE from us into [target]. */
     fun push(target: EnergyPeripheral, amount: Int = Int.MAX_VALUE): Int
+
+    /**
+     * Permanently void up to [amount] FE. Returns FE actually destroyed.
+     * The energy is not transferred to another buffer — it simply ceases.
+     */
+    fun destroy(amount: Int): Int
 }

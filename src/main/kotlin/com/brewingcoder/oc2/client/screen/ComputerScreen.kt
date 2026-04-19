@@ -4,6 +4,7 @@ import com.brewingcoder.oc2.OpenComputers2
 import com.brewingcoder.oc2.block.ComputerBlockEntity
 import com.brewingcoder.oc2.client.OC2ClientConfig
 import com.brewingcoder.oc2.client.TerminalOutputDispatcher
+import com.brewingcoder.oc2.network.ComputerControlPayload
 import com.brewingcoder.oc2.network.RunCommandPayload
 import com.brewingcoder.oc2.network.SetChannelPayload
 import com.brewingcoder.oc2.network.TerminalOutputPayload
@@ -36,6 +37,7 @@ class ComputerScreen(
 ) : Screen(Component.translatable("screen.${OpenComputers2.ID}.computer")) {
 
     private lateinit var channelBox: EditBox
+    private lateinit var resetButton: ImageButton
 
     /** Terminal output buffer (lines). Capped at [MAX_TERMINAL_LINES]. */
     private val terminalLines = mutableListOf(
@@ -87,15 +89,14 @@ class ComputerScreen(
             )
         )
 
-        addRenderableWidget(
-            ImageButton(
-                left + pad + ICON_SIZE + 4, top + pad - 2,
-                ICON_SIZE, ICON_SIZE,
-                RESET_SPRITES,
-                { _ -> onReset() },
-                Component.translatable("screen.${OpenComputers2.ID}.computer.reset"),
-            )
+        resetButton = ImageButton(
+            left + pad + ICON_SIZE + 4, top + pad - 2,
+            ICON_SIZE, ICON_SIZE,
+            RESET_SPRITES,
+            { _ -> onReset() },
+            Component.translatable("screen.${OpenComputers2.ID}.computer.reset"),
         )
+        addRenderableWidget(resetButton)
 
         val editBoxX = left + contentW - pad - CHANNEL_BOX_W
         channelBox = EditBox(
@@ -123,13 +124,16 @@ class ComputerScreen(
     private var terminalRect: Rect = Rect(0, 0, 0, 0)
 
     private fun onPower() {
-        OpenComputers2.LOGGER.info("[client] power button — no-op until VM lands")
-        appendTerminalLine("(power button — VM not implemented yet)")
+        val newAction = if (be.powered) ComputerControlPayload.ACTION_POWER_OFF
+                        else            ComputerControlPayload.ACTION_POWER_ON
+        PacketDistributor.sendToServer(ComputerControlPayload(be.blockPos, newAction))
     }
 
     private fun onReset() {
-        OpenComputers2.LOGGER.info("[client] reset button — no-op until VM lands")
-        appendTerminalLine("(reset button — VM not implemented yet)")
+        if (!be.powered) return
+        PacketDistributor.sendToServer(
+            ComputerControlPayload(be.blockPos, ComputerControlPayload.ACTION_RESET)
+        )
     }
 
     private fun onChannelEdited(newValue: String) {
@@ -145,6 +149,7 @@ class ComputerScreen(
 
     override fun charTyped(codePoint: Char, modifiers: Int): Boolean {
         if (channelBox.isFocused) return super.charTyped(codePoint, modifiers)
+        if (!be.powered) return false   // typing is rejected while off
         if (codePoint.code < 0x20 || codePoint.code == 0x7F) return false
         if (inputLine.length >= RunCommandPayload.MAX_COMMAND_LENGTH) return true
         inputLine += codePoint
@@ -159,6 +164,9 @@ class ComputerScreen(
             return true
         }
         if (channelBox.isFocused) return super.keyPressed(keyCode, scanCode, modifiers)
+        // Power off: only let ESC (close) and the channel-edit shortcut through;
+        // shell input/scroll/clipboard all sit out until power-on.
+        if (!be.powered) return super.keyPressed(keyCode, scanCode, modifiers)
 
         // Cmd-V / Ctrl-V — paste. hasControlDown() is platform-aware (Cmd on macOS).
         if (keyCode == KEY_V && Screen.hasControlDown()) {
@@ -348,6 +356,8 @@ class ComputerScreen(
 
     override fun render(graphics: GuiGraphics, mouseX: Int, mouseY: Int, partialTick: Float) {
         renderBackground(graphics, mouseX, mouseY, partialTick)
+        // Reset is meaningless when off — vanilla draws inactive ImageButtons greyed.
+        resetButton.active = be.powered
 
         graphics.fill(terminalRect.x - 2, terminalRect.y - 2,
             terminalRect.x + terminalRect.w + 2, terminalRect.y + terminalRect.h + 2,
@@ -355,6 +365,22 @@ class ComputerScreen(
         graphics.fill(terminalRect.x, terminalRect.y,
             terminalRect.x + terminalRect.w, terminalRect.y + terminalRect.h,
             COLOR_TERMINAL_BG)
+
+        // Powered-off short-circuit: dim the terminal area + show a centered
+        // "press Power" prompt. Channel field still renders so the player can
+        // change it before flipping power on.
+        if (!be.powered) {
+            val msg = "[ powered off — press Power ]"
+            val mx = terminalRect.x + (terminalRect.w - font.width(msg)) / 2
+            val my = terminalRect.y + (terminalRect.h - font.lineHeight) / 2
+            graphics.drawString(font, msg, mx, my, COLOR_LABEL, false)
+            // Still draw channel label and the channel widget (rendered by super)
+            val l = Component.literal("Channel:")
+            graphics.drawString(font, l, channelBox.x - font.width(l) - 4,
+                channelBox.y + (channelBox.height - font.lineHeight) / 2, COLOR_LABEL, false)
+            super.render(graphics, mouseX, mouseY, partialTick)
+            return
+        }
 
         val labelText = Component.literal("Channel:")
         val labelX = channelBox.x - font.width(labelText) - 4

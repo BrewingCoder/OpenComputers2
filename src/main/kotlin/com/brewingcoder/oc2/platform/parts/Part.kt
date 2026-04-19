@@ -28,6 +28,13 @@ interface Part {
     var label: String
 
     /**
+     * Wifi channel this part advertises on. Per-part — two parts on the same
+     * adapter can sit on different channels. The adapter is just a physical
+     * mount; routing is per-peripheral.
+     */
+    var channelId: String
+
+    /**
      * Called once after the host BE has wired this part into its face slot.
      * Implementations should resolve their first capability lookup here. Re-runs
      * on `neighborChanged` via [onNeighborChanged].

@@ -2,6 +2,7 @@ package com.brewingcoder.oc2.item
 
 import com.brewingcoder.oc2.OpenComputers2
 import com.brewingcoder.oc2.block.ModBlocks
+import com.brewingcoder.oc2.block.parts.BlockPart
 import com.brewingcoder.oc2.block.parts.EnergyPart
 import com.brewingcoder.oc2.block.parts.FluidPart
 import com.brewingcoder.oc2.block.parts.InventoryPart
@@ -57,4 +58,10 @@ object ModItems {
         PartItem(EnergyPart.TYPE, Item.Properties())
     }
     val ENERGY_PART: PartItem by ENERGY_PART_HOLDER
+
+    /** Block part — read adjacent block state / harvest the block into an inventory. */
+    val BLOCK_PART_HOLDER: DeferredItem<PartItem> = REGISTRY.register("block_part") { ->
+        PartItem(BlockPart.TYPE, Item.Properties())
+    }
+    val BLOCK_PART: PartItem by BLOCK_PART_HOLDER
 }

@@ -1,6 +1,7 @@
 package com.brewingcoder.oc2.block
 
 import com.brewingcoder.oc2.block.parts.PartItem
+import com.brewingcoder.oc2.block.parts.PartItems
 import com.brewingcoder.oc2.client.AdapterClientHandler
 import com.mojang.serialization.MapCodec
 import net.minecraft.core.BlockPos
@@ -124,8 +125,8 @@ class AdapterBlock(properties: Properties) : BaseEntityBlock(properties) {
 
     /**
      * Empty-hand right-click → open the Part Config GUI for the part on the
-     * clicked arm. No-op if no part on that face. Client-side opens the
-     * screen; the server short-circuits with SUCCESS to consume the click.
+     * clicked arm. **Sneak + empty-hand right-click** → remove the part and
+     * drop the part item back at the player. No-op if no part on that face.
      */
     override fun useWithoutItem(
         state: BlockState,
@@ -138,6 +139,35 @@ class AdapterBlock(properties: Properties) : BaseEntityBlock(properties) {
             ?: return InteractionResult.PASS
         val face = faceFromHit(hit, pos) ?: hit.direction
         val part = be.partOn(face) ?: return InteractionResult.PASS
+        if (player.isSecondaryUseActive) {
+            // Sneak: remove + spawn drop. Server only — client just consumes the click.
+            // Always drops as an ItemEntity (even in creative) with velocity aimed at
+            // the player, so the pop is visibly attributable to the click.
+            if (!level.isClientSide) {
+                val removed = be.removePart(face) ?: return InteractionResult.PASS
+                val item = PartItems.itemFor(removed.typeId)
+                if (item != null) {
+                    val stack = net.minecraft.world.item.ItemStack(item)
+                    // Spawn position: just outside the face we removed from, centered.
+                    val origin = pos.relative(face)
+                    val sx = origin.x + 0.5; val sy = origin.y + 0.5; val sz = origin.z + 0.5
+                    // Aim toward the player's chest. Slight upward bias for a nice arc.
+                    val dx = player.x - sx
+                    val dy = (player.y + 1.0) - sy
+                    val dz = player.z - sz
+                    val len = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz).coerceAtLeast(1e-3)
+                    val speed = 0.25
+                    val vx = (dx / len) * speed
+                    val vy = (dy / len) * speed + 0.1   // small lift
+                    val vz = (dz / len) * speed
+                    val ent = net.minecraft.world.entity.item.ItemEntity(level, sx, sy, sz, stack, vx, vy, vz)
+                    ent.setDefaultPickUpDelay()         // ~10-tick delay (vanilla)
+                    level.addFreshEntity(ent)
+                }
+            }
+            return InteractionResult.sidedSuccess(level.isClientSide)
+        }
+        // Plain right-click → open config GUI on the client.
         if (level.isClientSide) {
             AdapterClientHandler.openPartConfigScreen(pos, face, part.typeId, part.label)
         }

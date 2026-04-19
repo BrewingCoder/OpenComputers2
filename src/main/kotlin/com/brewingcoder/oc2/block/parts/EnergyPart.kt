@@ -34,6 +34,11 @@ class EnergyPart : CapabilityBackedPart<IEnergyStorage>(TYPE_ID, PartCapabilityK
 
         override fun push(target: EnergyPeripheral, amount: Int): Int =
             (target as? Wrapper)?.let { it.pull(this, amount) } ?: 0
+
+        override fun destroy(amount: Int): Int {
+            // Single extract is the destroy — no receive paired with it.
+            return storage.extractEnergy(amount.coerceAtLeast(0), /* simulate = */ false)
+        }
     }
 
     companion object {

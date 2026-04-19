@@ -15,5 +15,6 @@ object ModParts {
         PartRegistry.register(RedstonePart.TYPE)
         PartRegistry.register(FluidPart.TYPE)
         PartRegistry.register(EnergyPart.TYPE)
+        PartRegistry.register(BlockPart.TYPE)
     }
 }

@@ -44,6 +44,13 @@ class FluidPart : CapabilityBackedPart<IFluidHandler>(TYPE_ID, PartCapabilityKey
             return targetH.fill(actuallyDrained, IFluidHandler.FluidAction.EXECUTE)
         }
 
+        override fun destroy(amount: Int): Int {
+            // Single drain is the destroy — no fill paired with it. Pull from
+            // any tank, total amount.
+            val drained = handler.drain(amount.coerceAtLeast(0), IFluidHandler.FluidAction.EXECUTE)
+            return drained.amount
+        }
+
         override fun pull(source: FluidPeripheral, amount: Int): Int {
             val srcH = (source as? Wrapper)?.handler ?: return 0
             val drained = srcH.drain(amount.coerceAtLeast(0), IFluidHandler.FluidAction.SIMULATE)

@@ -39,6 +39,8 @@ class PartFoundationsTest {
         override fun <C : Any> lookupCapability(key: CapabilityKey<C>): C? = capLookup(key) as? C
         override fun readRedstoneSignal(): Int = 0
         override fun writeRedstoneSignal(level: Int) {}
+        override fun readAdjacentBlock(): com.brewingcoder.oc2.platform.peripheral.BlockPeripheral.BlockReadout? = null
+        override fun harvestAdjacentBlock(target: com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral?): List<com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral.ItemSnapshot> = emptyList()
     }
 
     @Test
