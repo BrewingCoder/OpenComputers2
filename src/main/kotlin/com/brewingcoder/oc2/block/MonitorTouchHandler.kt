@@ -42,11 +42,25 @@ object MonitorTouchHandler {
     @SubscribeEvent
     fun onRightClickBlock(event: PlayerInteractEvent.RightClickBlock) {
         val level = event.level
-        if (level.isClientSide) return
         val pos = event.pos
         val state = level.getBlockState(pos)
         if (state.block !== ModBlocks.MONITOR) return
         val player = event.entity
+
+        // Sneak + right-click → open the channel config screen on the client
+        // and consume the event on both sides so vanilla doesn't process it
+        // (which would otherwise place a held block adjacent to the monitor).
+        if (player.isShiftKeyDown) {
+            if (level.isClientSide) {
+                com.brewingcoder.oc2.client.ClientHandler.openMonitorConfigScreen(level, pos)
+            }
+            event.isCanceled = true
+            event.cancellationResult = InteractionResult.SUCCESS
+            return
+        }
+
+        // Non-sneak right-click is a touch event — server side only.
+        if (level.isClientSide) return
 
         val be = level.getBlockEntity(pos) as? MonitorBlockEntity ?: return
         val master = if (be.isMaster) be
@@ -54,8 +68,8 @@ object MonitorTouchHandler {
 
         val facing = state.getValue(MonitorBlock.FACING)
         // RightClickBlock.hitVec is a BlockHitResult; .location gives the Vec3
-        val cell = MonitorBlock.hitToCell(facing, master, event.hitVec.location) ?: return
-        master.enqueueTouch(cell.first, cell.second, player.name.string)
+        val hit = MonitorBlock.hitToCell(facing, master, event.hitVec.location) ?: return
+        master.enqueueTouch(hit.col, hit.row, hit.px, hit.py, player.name.string)
 
         // Consume the click so the held item (if any) doesn't run its usual action
         // (e.g. so a stack of monitors in hand doesn't auto-place when touching the screen).

@@ -2,7 +2,13 @@ package com.brewingcoder.oc2.client.screen
 
 import com.brewingcoder.oc2.block.MonitorBlock
 import com.brewingcoder.oc2.block.MonitorBlockEntity
+import com.mojang.blaze3d.systems.RenderSystem
+import com.mojang.blaze3d.vertex.BufferUploader
+import com.mojang.blaze3d.vertex.DefaultVertexFormat
 import com.mojang.blaze3d.vertex.PoseStack
+import com.mojang.blaze3d.vertex.Tesselator
+import com.mojang.blaze3d.vertex.VertexFormat
+import net.minecraft.client.renderer.GameRenderer
 import net.minecraft.client.renderer.MultiBufferSource
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderer
 import net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider
@@ -39,6 +45,15 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         packedOverlay: Int,
     ) {
         if (!be.isMaster) return  // slaves render nothing
+        // Iris/Oculus call render() multiple times per visible frame (gbuffer,
+        // shadow, deferred composites). Skip the shadow pass entirely so our
+        // text doesn't end up baked into the shadow map. Same trick CC:Tweaked
+        // uses — see [ShaderModCompat].
+        if (ShaderModCompat.isRenderingShadowPass()) return
+        // Dedup non-shadow passes too — multiple gbuffer-stage calls within one
+        // visible frame would otherwise re-render and (with our MSDF custom
+        // shader) potentially clobber prior writes.
+        if (MonitorFrameCounter.shouldSkip(be)) return
         val snap = be.renderSnapshot() ?: return
         if (snap.rows.isEmpty()) return
 
@@ -46,8 +61,11 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         val groupW = be.groupBlocksWide
         val groupH = be.groupBlocksTall
 
-        val shader = MsdfShaders.get() ?: return
-        shader.getUniform("ScreenPxRange")?.set(WORLD_SCREEN_PX_RANGE)
+        // Push fog out to extreme distance for our draw — Iris/Oculus deferred
+        // composites otherwise apply fog that darkens our text to invisibility.
+        // Same trick CC:Tweaked uses. Restore at end.
+        val savedFogStart = com.mojang.blaze3d.systems.RenderSystem.getShaderFogStart()
+        com.mojang.blaze3d.systems.RenderSystem.setShaderFogStart(1e4f)
 
         poseStack.pushPose()
 
@@ -105,6 +123,34 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         val matrix = poseStack.last().pose()
         val rowHeight = textRenderer.fontLineHeight  // em units
         val cellWidth = CHAR_ADVANCE_EM           // em units; matches JBMono advance
+        val surfaceW = cellWidth * snap.cols
+        val surfaceH = rowHeight * snap.rows.size
+
+        // ---- Pass 0: HD pixel buffer (under everything) ----
+        // Sample the per-master DynamicTexture as a single textured quad
+        // covering the full drawable surface. Vanilla position_tex_color shader
+        // → shader-pack-safe. Depth test off so layering with bg/text (deferred,
+        // same-z) works regardless of draw order.
+        be.pixelSnapshot()?.let { (pxW, pxH, argb) ->
+            val texId = MonitorPixelTextureCache.getOrUpload(be.blockPos, pxW, pxH, argb)
+            if (texId != 0) {
+                RenderSystem.setShader { GameRenderer.getPositionTexColorShader() }
+                RenderSystem.setShaderTexture(0, texId)
+                RenderSystem.enableBlend()
+                RenderSystem.defaultBlendFunc()
+                RenderSystem.disableCull()
+                RenderSystem.disableDepthTest()
+                val builder = Tesselator.getInstance()
+                    .begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR)
+                builder.addVertex(matrix, 0f,        surfaceH, 0f).setUv(0f, 1f).setColor(255, 255, 255, 255)
+                builder.addVertex(matrix, surfaceW,  surfaceH, 0f).setUv(1f, 1f).setColor(255, 255, 255, 255)
+                builder.addVertex(matrix, surfaceW,  0f,       0f).setUv(1f, 0f).setColor(255, 255, 255, 255)
+                builder.addVertex(matrix, 0f,        0f,       0f).setUv(0f, 0f).setColor(255, 255, 255, 255)
+                BufferUploader.drawWithShader(builder.buildOrThrow())
+                RenderSystem.enableDepthTest()
+                RenderSystem.enableCull()
+            }
+        }
 
         // ---- Pass 1: per-cell background fills (only non-transparent cells) ----
         // Drawn FIRST so the text overlays correctly and bg colors don't punch holes
@@ -129,23 +175,97 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
             }
         }
 
-        // ---- Pass 2: text glyphs, tinted per-cell by fg ----
-        // Per-cell color means we can't drawLineToBuffer for whole rows anymore —
-        // would burn the same color across the whole line. One char at a time.
-        val textBuffer = bufferSource.getBuffer(MsdfShaders.MSDF_TEXT)
+        // Force the bg pass to flush BEFORE text. Both submit translucent quads
+        // at z=0 to the same MultiBufferSource — without explicit end-batch, the
+        // dispatcher chooses an order, and on the bitmap path text was being
+        // drawn UNDER bg fills (opaque cell bgs occluded the glyphs).
+        (bufferSource as? net.minecraft.client.renderer.MultiBufferSource.BufferSource)
+            ?.endBatch(MsdfShaders.MONITOR_BG_FILL)
+
+        // ---- Pass 2: glyph quads ----
+        // MSDF custom shader is the high-quality path but Iris/Oculus substitute
+        // mod custom shaders during deferred composite, producing invisible
+        // output. Fall back to bitmap atlas + vanilla position_tex_color shader
+        // when a shader pack is loaded.
+        // Per-frame check — Iris's shader-toggle hotkey flips this without any
+        // world reload, so caching the answer at startup would leave us in the
+        // wrong path until next launch.
+        if (ShaderModCompat.isShaderPackActive()) {
+            renderTextBitmap(bufferSource, matrix, snap, rowHeight, cellWidth)
+        } else {
+            renderTextMsdf(bufferSource, matrix, snap, rowHeight, cellWidth)
+        }
+
+        poseStack.popPose()
+        com.mojang.blaze3d.systems.RenderSystem.setShaderFogStart(savedFogStart)
+    }
+
+    /** Bitmap atlas glyph quads via vanilla `position_tex_color` shader (shader-pack-safe). */
+    private fun renderTextBitmap(
+        bufferSource: MultiBufferSource,
+        matrix: org.joml.Matrix4f,
+        snap: MonitorBlockEntity.RenderSnapshot,
+        rowHeight: Float,
+        cellWidth: Float,
+    ) {
+        val buf = bufferSource.getBuffer(MsdfShaders.MONITOR_TEXT_BITMAP)
+        val atlasW = MsdfShaders.BITMAP_ATLAS_W
+        val atlasH = MsdfShaders.BITMAP_ATLAS_H
+        val atlasCols = MsdfShaders.BITMAP_ATLAS_COLS
+        val cellPxW = MsdfShaders.BITMAP_CELL_PX_W
+        val cellPxH = MsdfShaders.BITMAP_CELL_PX_H
+        for (rowIdx in snap.rows.indices) {
+            val line = snap.rows[rowIdx]
+            val y0 = rowIdx * rowHeight
+            val y1 = y0 + rowHeight
+            for (col in line.indices) {
+                val ch = line[col]
+                if (ch == ' ') continue
+                val code = ch.code
+                if (code !in 0x20..0xFF) continue
+                val srcCol = code % atlasCols
+                val srcRow = code / atlasCols
+                val u0 = srcCol * cellPxW / atlasW
+                val u1 = (srcCol + 1) * cellPxW / atlasW
+                val v0 = srcRow * cellPxH / atlasH
+                val v1 = (srcRow + 1) * cellPxH / atlasH
+                val x0 = col * cellWidth
+                val x1 = x0 + cellWidth
+                val color = snap.fg[rowIdx * snap.cols + col]
+                val a = ((color ushr 24) and 0xFF)
+                val r = ((color ushr 16) and 0xFF)
+                val g = ((color ushr 8) and 0xFF)
+                val b = (color and 0xFF)
+                buf.addVertex(matrix, x0, y1, 0f).setUv(u0, v1).setColor(r, g, b, a)
+                buf.addVertex(matrix, x1, y1, 0f).setUv(u1, v1).setColor(r, g, b, a)
+                buf.addVertex(matrix, x1, y0, 0f).setUv(u1, v0).setColor(r, g, b, a)
+                buf.addVertex(matrix, x0, y0, 0f).setUv(u0, v0).setColor(r, g, b, a)
+            }
+        }
+    }
+
+    /** MSDF vector glyphs via custom shader — better quality, no-shader-pack only. */
+    private fun renderTextMsdf(
+        bufferSource: MultiBufferSource,
+        matrix: org.joml.Matrix4f,
+        snap: MonitorBlockEntity.RenderSnapshot,
+        rowHeight: Float,
+        cellWidth: Float,
+    ) {
+        val shader = MsdfShaders.get() ?: return
+        shader.getUniform("ScreenPxRange")?.set(WORLD_SCREEN_PX_RANGE)
+        val buf = bufferSource.getBuffer(MsdfShaders.MSDF_TEXT)
         for (rowIdx in snap.rows.indices) {
             val line = snap.rows[rowIdx]
             val y = rowIdx * rowHeight
             for (col in line.indices) {
                 val ch = line[col]
-                if (ch == ' ') continue  // skip spaces — most common cell, no visible glyph anyway
+                if (ch == ' ') continue
                 val color = snap.fg[rowIdx * snap.cols + col]
                 val x = col * cellWidth
-                textRenderer.drawLineToBuffer(textBuffer, matrix, x, y, ch.toString(), color, 1f)
+                textRenderer.drawLineToBuffer(buf, matrix, x, y, ch.toString(), color, 1f)
             }
         }
-
-        poseStack.popPose()
     }
 
     /** Render the master's full multi-block surface even when only the master is in view. */

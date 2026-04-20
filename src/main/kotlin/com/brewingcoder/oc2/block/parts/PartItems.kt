@@ -18,6 +18,7 @@ object PartItems {
         FluidPart.TYPE_ID     -> ModItems.FLUID_PART
         EnergyPart.TYPE_ID    -> ModItems.ENERGY_PART
         BlockPart.TYPE_ID     -> ModItems.BLOCK_PART
+        BridgePart.TYPE_ID    -> ModItems.BRIDGE_PART
         else -> null
     }
 }

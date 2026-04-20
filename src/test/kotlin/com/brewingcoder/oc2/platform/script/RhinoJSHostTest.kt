@@ -290,6 +290,14 @@ class RhinoJSHostTest {
         override fun setForegroundColor(color: Int) { log.add("setFg(${"%08X".format(color)})") }
         override fun setBackgroundColor(color: Int) { log.add("setBg(${"%08X".format(color)})") }
         override fun pollTouches(): List<com.brewingcoder.oc2.platform.peripheral.MonitorPeripheral.TouchEvent> = emptyList()
+        override fun getPixelSize(): Pair<Int, Int> = (cols * 12) to (rows * 12)
+        override fun clearPixels(argb: Int) { log.add("clearPixels(${"%08X".format(argb)})") }
+        override fun setPixel(x: Int, y: Int, argb: Int) { log.add("setPixel($x,$y,${"%08X".format(argb)})") }
+        override fun drawRect(x: Int, y: Int, w: Int, h: Int, argb: Int) { log.add("drawRect($x,$y,$w,$h)") }
+        override fun drawRectOutline(x: Int, y: Int, w: Int, h: Int, argb: Int, thickness: Int) { log.add("drawRectOutline($x,$y,$w,$h,t=$thickness)") }
+        override fun drawLine(x1: Int, y1: Int, x2: Int, y2: Int, argb: Int) { log.add("drawLine($x1,$y1,$x2,$y2)") }
+        override fun drawGradientV(x: Int, y: Int, w: Int, h: Int, topArgb: Int, bottomArgb: Int) { log.add("drawGradientV($x,$y,$w,$h)") }
+        override fun fillCircle(cx: Int, cy: Int, r: Int, argb: Int) { log.add("fillCircle($cx,$cy,$r)") }
     }
 
     @Test

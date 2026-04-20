@@ -43,38 +43,131 @@ Some NeoForge mods may still use the old annotation pattern via a backward-compa
 
 ---
 
-## MSDF terminal text rendering — R2
+## MSDF terminal text rendering — SHIPPED
 
-**Status:** deferred to R2 (post-platform-basics)
-**Priority:** medium-high — visual quality of THE central UI element
+Atlas + MSDF shader + `MsdfTerminalRenderer` shipped in R2. Original goal:
+vector-quality text at any size for the in-world Monitor and the GUI Terminal.
 
-### Why we need it
-v0 ships with **Spleen 5×8** baked into a bitmap atlas, blitted via our custom `TerminalRenderer`. It's crisp at native size but is a true pixel font — looks like a 1990s terminal emulator. Acceptable for v0 / R1.
+### Shader-pack compatibility — SHIPPED (2026-04-19, revised approach)
+The naïve MSDF approach fails under Iris/Oculus + Complementary etc. — shader
+packs wrap our custom MSDF shader through their pipeline and produce wrong
+output (typically black).
 
-For "modern terminal emulator" quality (think Terminal.app at 15pt SF Mono — anti-aliased, subpixel-clean, scalable to any size), we need MSDF (Multi-channel Signed Distance Field) text rendering. This is the technique used by Rocket League, Forza, and other AAA games for in-game UI text.
+**Initial attempt (abandoned):** bake MSDF into a private offscreen FBO and
+render the result as a vanilla `position_tex_color` quad. This worked in
+theory but the FBO bake never produced visible pixels when invoked from
+inside `BlockEntityRenderer.render()` — depth/blend state leaked, and bake
+ordering against the BE render pass was fragile. Reverted; `MonitorFboCache`/
+`MonitorFboBaker` deleted.
 
-### What MSDF gives us
-- **Vector-quality text** baked into a single small bitmap — render at any pixel size with no quality loss
-- **Sharp at small sizes** (matches what Claude Code shows in Terminal.app)
-- **Smooth at large sizes** (no aliasing on giant text)
-- **GPU-friendly** — single texture, custom shader, one quad per glyph
-- Works inside MC's GL context — no need to escape MC's framebuffer
+**Final approach (CC:Tweaked-aligned):** ship two glyph paths and pick one
+per frame.
+1. **MSDF path** (`renderTextMsdf`) when no shader pack is loaded — high
+   quality vector glyphs via our custom shader.
+2. **Bitmap path** (`renderTextBitmap`) when a shader pack is loaded — 5×8
+   Spleen atlas (`textures/font/terminal_atlas.png`, 80×128, 16×16 grid)
+   sampled through vanilla `position_tex_color` so the shader pack sees
+   ordinary in-world geometry.
 
-### The build
-1. **Generate MSDF atlas** from JetBrains Mono TTF using [msdfgen](https://github.com/Chlumsky/msdfgen) (CLI tool) or [msdf-atlas-gen](https://github.com/Chlumsky/msdf-atlas-gen) (preferred — handles whole atlas in one shot)
-2. **Custom shader pair** (vertex + fragment) — fragment computes signed distance from MSDF, applies smoothstep edge
-3. **Register shader** with NeoForge's `RenderType` system — `RenderType.create(...)` with our custom shader
-4. **New `MsdfTerminalRenderer` class** — drop-in replacement for `TerminalRenderer`. Same API surface; players don't notice.
+Plus the three CC-pattern pieces, all in `MonitorRenderer` /
+`ShaderModCompat` / `MonitorFrameCounter`:
+- **Frame dedup** — `MonitorFrameCounter` ensures one render per visible
+  frame even when Iris's gbuffer + deferred composite stages each call
+  `BlockEntityRenderer.render()` for the same BE.
+- **Shadow-pass detection** — `IrisApi.isRenderingShadowPass()` (reflective)
+  early-returns so monitor text isn't baked into the shadow map.
+- **Fog push** — `RenderSystem.setShaderFogStart(1e4f)` for the duration of
+  our draw so deferred composites don't darken the text to invisibility.
 
-### Why deferred to R2
-- v0 needs to ship with a working terminal first; Spleen does that
-- MSDF is ~1-2 weeks of focused work (shader debug, atlas tooling, integration)
-- The R1 platform features (VM scheduler, driver SPI, channel registry maturity) are higher leverage than text crispness
-- Spleen is "good enough" for the entire R1 use case
-- When R2 lands, swap in MsdfTerminalRenderer — zero impact on player scripts that use the screen API
+`ShaderModCompat.isShaderPackActive()` is checked **per frame** via
+`IrisApi.isShaderPackInUse()` — Iris's shader-toggle hotkey flips this
+without a world reload, so caching at startup would lock us in the wrong
+path until next launch.
 
-### When to act
-Trigger: after R1 platform basics ship and we start showing the mod to other players. The text-quality complaint will arrive within a few weeks of public exposure. Build MSDF in the lull between R1 ship and R2 feature work.
+### Render-order trap (fixed 2026-04-20)
+The bg-fill and text passes both submit translucent quads at z=0 to the same
+`MultiBufferSource`. Without explicit ordering the dispatcher chose to flush
+text **before** bg fills, so opaque cell bgs occluded their own glyphs. Fix:
+force-flush the bg buffer with
+`(bufferSource as BufferSource).endBatch(MONITOR_BG_FILL)` before submitting
+text. Caught only after building a "corporate KPI" reactor dashboard whose
+opaque card backgrounds suddenly hid every label. See `MonitorRenderer.render()`.
+
+### Followups
+- **Per-cell-density tuning**: `PX_PER_CELL = 12` is a magic number; could be
+  derived from camera distance to avoid the full-res NBT pixel buffer when
+  the monitor is far from the camera.
+
+---
+
+## HD pixel-buffer monitor mode — SHIPPED (2026-04-20)
+
+Adds a pixel layer below the cell-text grid so scripts can draw real
+graphics: gauges, gradients, buttons, mini-charts. The cell text grid still
+overlays on top, so existing text-mode scripts keep working.
+
+**Surface:** `getPixelSize`, `clearPixels`, `setPixel`, `drawRect`,
+`drawRectOutline`, `drawLine` (Bresenham), `drawGradientV`, `fillCircle`.
+Same surface from Lua and JS. Density: 12 px per cell, so an 80×27 cell
+group is 960×324 px.
+
+**Pipeline:**
+- Pixel buffer is `IntArray` of ARGB on the master `MonitorBlockEntity`.
+  NBT-persisted via `Deflater` compression (drops ~95% on typical content
+  thanks to long runs of the same color).
+- Renderer Pass 0 uploads the buffer to a per-master `DynamicTexture`
+  (`MonitorPixelTextureCache`, content-hashed so we skip uploads when
+  unchanged) and draws it as a single textured quad covering the surface
+  via `position_tex_color` — shader-pack-safe by construction.
+- Cell text + bg fills layer on top in passes 1–2 (see render-order trap
+  above).
+
+**Touch events** now carry pixel coords too:
+`monitor_touch col row px py player`. Scripts can do pixel-precise
+hit-testing on rendered buttons. `pollTouches()` returns the same fields.
+
+### Followups
+- **Touch via simulate_right_click** — oc2dbg's `simulate_right_click` doesn't
+  reach `PlayerInteractEvent.RightClickBlock`; observed during reactor.lua
+  dashboard testing. Real player input works; programmatic does not.
+  Investigate alternative path (direct `PlayerInteractEvent.post`?).
+
+---
+
+## Implicit peripheral lease — SHIPPED (2026-04-20)
+
+Prevents two scripts from stomping on the same peripheral concurrently. The
+first script to mutate a peripheral implicitly leases it; second script gets
+`peripheral X is held by pid=N (chunkName) -- kill it or wait` thrown as a
+script error. Auto-released on script kill / crash / normal exit.
+
+**Pieces:**
+- `ScriptCallerContext` — ThreadLocal holding `(pid, chunkName)`. Set by
+  `ScriptRunHandle` when a worker thread starts; cleared on exit.
+- `PeripheralLease` — `ConcurrentHashMap<Any, Holder>` keyed by peripheral
+  identity. `acquireOrThrow(peripheral)` is no-op when no script context is
+  active (tests, server-side direct calls), grants/keeps the lease for the
+  caller, throws `PeripheralLockException` otherwise.
+- Kotlin → Lua: `CobaltLuaHost.method()` catches `PeripheralLockException`
+  and rethrows as `LuaError`. JS host has the matching catch.
+
+**Trap caught the hard way:** the lease check MUST happen on the script
+worker thread, not inside `onServerThread { }`. The marshal hops to the
+server thread where `ScriptCallerContext` is null, so the check silently
+no-ops. Today every mutating method on `MonitorBlockEntity` does
+`lease(); onServerThread { ... }` — lease BEFORE marshal.
+
+Read-only methods (`getSize`, `pollTouches`, `getPixelSize`, etc.) skip
+the lease check intentionally — many readers, one writer.
+
+### Followups
+- **Extend to other mutating peripherals.** `EnergyPart`, `FluidPart`,
+  `InventoryPart`, `RedstonePart`, `BlockPart.harvest`, `BridgePart.call`
+  should all `lease()` before mutation. Currently scoped to `Monitor` only.
+- **Cobalt LuaString is Latin-1.** Non-ASCII chars in Kotlin error messages
+  become `?` after the Cobalt conversion (LuaString.valueOf uses ISO-8859-1).
+  Em-dashes were the visible victim — replaced with `--` in
+  `PeripheralLease`. Real fix needs a UTF-8-aware terminal renderer; defer.
 
 ---
 
@@ -99,6 +192,32 @@ Currently caps at 256 lines and oldest drops off. Real shells need a scroll buff
 
 ---
 
+## Bridge dispatcher — universal peripheral adapter
+
+**Status:** SPI + dispatcher + ZeroCore adapter SHIPPED (2026-04-19).
+Other adapters (CC, ID, NeoForge caps) deferred.
+
+### Shipped
+- `BridgePart` — universal `bridge` Part kind, install on adapter face touching anything scriptable
+- `ProtocolAdapter` SPI in `block/bridge/`
+- `BridgeDispatcher` — soft-dep aware loader via ModList + Class.forName isolation
+- `ZeroCoreAdapter` — pure-reflection wrapper for Big/Extreme Reactors, Turbines, Energizers (no compile-time dep on ZeroCore)
+- `BridgePeripheral` interface with `methods()`, `call(name, args)`, `describe()` self-introspection
+- Lua + JS host wrappers
+- Scott confirmed: "I don't want 30 different mods to support this" → all adapters bundled in OC2 core (NOT companion jars), gated by `ModList.isLoaded` per-adapter
+
+### Pending adapters (sorted by leverage)
+1. **CC `IPeripheral`** — covers ~100+ mods in any pack with CC:Tweaked installed (Mek, Botania, Create, Advanced Peripherals, etc.). `IComputerAccess` stub is solved territory; lift the pattern from CC mod-compat addons. **Highest leverage; do next.**
+2. **NeoForge cap fallback** — `IItemHandler`/`IFluidHandler`/`IEnergyStorage`. Overlaps existing typed parts but lets the bridge gracefully expose generic blocks.
+3. **Integrated Dynamics `INetwork`** — for ID cables. Read aspects, drive writers, variables.
+4. **OC1 `ManagedPeripheral`** — historical, low priority.
+
+### Pending polish
+- **`call()` value marshalling**: `Object[]` → `List<*>` works for primitives + Map, but raw arrays come back as `[Ljava.lang.Object;@hash` strings. Add `Array<*>` case in `toLuaValue` / `javaToJs`.
+- **Optional unwrapping**: ZeroCore returns `Optional<Fluid>` etc. Currently passes through as `"Optional.empty"` strings. Unwrap in `ZeroCoreAdapter.call`.
+
+---
+
 ## Cooperative scheduling (R2)
 
 **Status:** Phase 1 + 2 SHIPPED (2026-04-18). Phase 3 (JS event support) deferred.
@@ -120,18 +239,46 @@ Currently caps at 256 lines and oldest drops off. Real shells need a scroll buff
 - Foreground script output goes to the terminal; background output drained
   and dropped (per-bg buffer is the next followup below)
 
-### Phase 3 — not yet started
+### Phase 3 — partially shipped
 
+**Shipped (2026-04-19):**
+- **Per-background log viewer** — `tail [pid] [-n N]` shell command reads the
+  per-script tail buffer (200 lines, captures every `print`). Bg scripts that
+  crash also surface a `[bg pid=N name] crashed: <msg>` banner in the
+  foreground terminal — analogous to an unhandled-exception print to stderr.
+- **Kill all scripts on host BE removal** — `BeScriptRunner.killAll()` runs
+  in `ComputerBlockEntity.setRemoved` so bg scripts can't keep poking external
+  mods after the world is being torn down (was producing NPE log spam from
+  ZeroCore et al).
+
+**Still deferred:**
 - **JS `os.pullEvent`** — Rhino has continuations support but it's a mode
   switch with implications for the rest of the JS host. Worth doing once
   someone actually writes a JS automation script that needs events.
 - **CC:T-style filter requeue** — currently `os.pullEvent("x")` drops
   intermediate non-matching events. CC:T queues them for the next
   unfiltered pull. Worth fixing if a script breaks because of the difference.
-- **Per-background log viewer** — `tail <pid>` shell command would let
-  players check what a background script printed. Today bg output is dropped.
 - **Lua coroutine model (true cooperative scheduling)** — the original
   R2 design. The current thread-per-script model wastes a thread per
   background script. Coroutines would scale to dozens of bg scripts at
   the cost of a meaningful refactor. Defer until someone actually runs
   20+ scripts on one computer.
+
+---
+
+## Monitor multi-block — channel + UI
+
+**Shipped (2026-04-19):**
+- Master-only `ChannelRegistry` registration (was 1-per-block, now 1-per-group)
+- `setChannelIdForGroup` propagates channel onto every block in the group so a
+  master flip carries it forward
+- `MonitorConfigScreen` — sneak + right-click any monitor to set channel,
+  matches `PartConfigScreen` pattern with nearby-channel ▼ dropdown
+- `SetMonitorChannelPayload` — server validates 16-block range, resolves master
+  from clicked block
+
+### Still pending
+- **`Lua peripheral` syntax-fix tests**: the `m.foo(x)` vs `m:foo(x)` bug
+  shipped today (CobaltLuaHost `method(self) {...}` helper) needs explicit
+  unit tests for both call styles to lock the contract.
+- **Bake out of render() pass**: see MSDF section above.

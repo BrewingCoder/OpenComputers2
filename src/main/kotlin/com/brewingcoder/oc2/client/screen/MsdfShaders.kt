@@ -59,6 +59,43 @@ object MsdfShaders {
     )
 
     /**
+     * Bitmap glyph atlas for in-world monitor rendering — `terminal_atlas.png`,
+     * 80×128, 16×16 grid of 5×8 cells. We use this through a VANILLA
+     * `position_tex_color` shader so Iris/Oculus deferred shading can wrap it
+     * properly. The MSDF path (below) only works without shader packs.
+     */
+    val BITMAP_ATLAS: ResourceLocation =
+        ResourceLocation.fromNamespaceAndPath(OpenComputers2.ID, "textures/font/terminal_atlas.png")
+    const val BITMAP_ATLAS_W = 80f
+    const val BITMAP_ATLAS_H = 128f
+    const val BITMAP_CELL_PX_W = 5
+    const val BITMAP_CELL_PX_H = 8
+    const val BITMAP_ATLAS_COLS = 16
+
+    /**
+     * Render type for in-world bitmap text — vanilla `position_tex_color` shader,
+     * bitmap atlas as Sampler0. Survives shader-pack pipelines; loses MSDF
+     * vector quality (5×8 pixel font, "1990s terminal" look). Used by
+     * MonitorRenderer because Iris substitutes our MSDF custom shader during
+     * deferred composite and the MSDF fragment logic doesn't survive.
+     */
+    val MONITOR_TEXT_BITMAP: RenderType = RenderType.create(
+        "oc2_monitor_text_bitmap",
+        DefaultVertexFormat.POSITION_TEX_COLOR,
+        VertexFormat.Mode.QUADS,
+        256,
+        false,
+        true,
+        RenderType.CompositeState.builder()
+            .setShaderState(RenderStateShard.ShaderStateShard(net.minecraft.client.renderer.GameRenderer::getPositionTexColorShader))
+            .setTextureState(RenderStateShard.TextureStateShard(BITMAP_ATLAS, false, false))
+            .setTransparencyState(RenderStateShard.TRANSLUCENT_TRANSPARENCY)
+            .setWriteMaskState(RenderStateShard.COLOR_WRITE)
+            .setCullState(RenderStateShard.NO_CULL)
+            .createCompositeState(false),
+    )
+
+    /**
      * Render type for MSDF text — a translucent quad pass with our shader bound
      * and the atlas texture as Sampler0. Use a fresh buffer source per frame
      * (graphics.bufferSource()) and end-batch after each text draw.

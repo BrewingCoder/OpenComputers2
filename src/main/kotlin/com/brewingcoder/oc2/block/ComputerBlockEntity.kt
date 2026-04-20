@@ -127,6 +127,11 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
             ChannelRegistry.unregister(this)
             if (computerId != ID_UNASSIGNED) ServerLoadedComputers.unregister(computerId)
         }
+        // Kill EVERY script (foreground + every background) so they can't keep
+        // calling into external mods after the world is being torn down — that
+        // surfaces as ugly NPE log spam from those mods. Foreground-only kill
+        // (which the power-off path uses) isn't enough here.
+        scriptRunner.killAll()
         super.setRemoved()
     }
 
@@ -183,13 +188,27 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
 
     private fun drainScriptOutput() {
         // Drain EVERY handle's output queue each tick. Foreground's lines route
-        // to the terminal; background's lines are drained-and-dropped (keeps
-        // worker queues from backing up — bg log viewing is a future feature).
+        // to the terminal; background's lines are drained-and-dropped (the
+        // tail buffer captures them for `tail <pid>`). When a bg script crashes,
+        // the error message gets surfaced in the foreground terminal so the
+        // developer sees the failure without needing to know about `tail`.
         val foreground = scriptRunner.current()
+        val crashLines = mutableListOf<String>()
         for (h in scriptRunner.all()) {
             val items = h.drainOutput()
-            if (h !== foreground) continue   // bg: items already drained, discard
-            // Below: same logic as before, but only for the foreground handle.
+            if (h !== foreground) {
+                // bg: discard items, but if it just finished with a real error,
+                // bubble a banner into the foreground stream once.
+                if (h.isDone() && bgAnnounced.add(h.pid)) {
+                    val result = h.result() ?: continue
+                    if (!result.ok && result.errorMessage != ScriptRunHandle.KILLED) {
+                        val msg = result.errorMessage ?: "unknown"
+                        crashLines.add("[bg pid=${h.pid} ${h.chunkName}] crashed: $msg")
+                    }
+                }
+                continue
+            }
+            // Foreground draining (unchanged).
             val lines = mutableListOf<String>()
             var clearFirst = false
             for (item in items) {
@@ -215,9 +234,21 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
             }
             if (h.isDone()) scriptOriginator = null
         }
+        // Surface bg crashes to the foreground terminal so the user actually
+        // sees them — analogous to a Java unhandled exception printing to stderr.
+        if (crashLines.isNotEmpty()) {
+            sendOutputToOriginator(crashLines, clearFirst = false)
+            recordToRecent(crashLines, clearFirst = false)
+        }
         // Sweep finished handles in one pass after draining.
         (scriptRunner as? BeScriptRunner)?.clearIfDone()
+        // Cull announced-pid set against currently-known handles to avoid leaking.
+        val livePids = scriptRunner.all().map { it.pid }.toSet()
+        bgAnnounced.retainAll(livePids)
     }
+
+    /** Pids of background scripts whose crash has already been announced. Prevents repeats. */
+    private val bgAnnounced: MutableSet<Int> = mutableSetOf()
 
     private fun recordToRecent(lines: List<String>, clearFirst: Boolean) {
         synchronized(recentOutput) {

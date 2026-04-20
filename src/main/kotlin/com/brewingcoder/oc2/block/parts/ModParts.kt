@@ -16,5 +16,6 @@ object ModParts {
         PartRegistry.register(FluidPart.TYPE)
         PartRegistry.register(EnergyPart.TYPE)
         PartRegistry.register(BlockPart.TYPE)
+        PartRegistry.register(BridgePart.TYPE)
     }
 }

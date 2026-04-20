@@ -45,6 +45,12 @@ object OC2Payloads {
             ComputerControlPayload.Companion::handle,
         )
 
+        registrar.playToServer(
+            SetMonitorChannelPayload.TYPE,
+            SetMonitorChannelPayload.STREAM_CODEC,
+            SetMonitorChannelPayload.Companion::handle,
+        )
+
         registrar.playToClient(
             TerminalOutputPayload.TYPE,
             TerminalOutputPayload.STREAM_CODEC,

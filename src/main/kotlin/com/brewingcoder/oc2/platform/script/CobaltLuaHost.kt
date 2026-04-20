@@ -2,6 +2,7 @@ package com.brewingcoder.oc2.platform.script
 
 import com.brewingcoder.oc2.platform.os.ShellOutput
 import com.brewingcoder.oc2.platform.peripheral.BlockPeripheral
+import com.brewingcoder.oc2.platform.peripheral.BridgePeripheral
 import com.brewingcoder.oc2.platform.peripheral.EnergyPeripheral
 import com.brewingcoder.oc2.platform.peripheral.FluidPeripheral
 import com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral
@@ -161,6 +162,27 @@ class CobaltLuaHost : ScriptHost {
     }
 
     /**
+     * Wrap a peripheral method body for `:` colon-call syntax. Lua's `m:foo(x)`
+     * desugars to `m.foo(m, x)` so the receiver is implicitly arg(1). This
+     * helper drops it before passing to [body], letting the body read the
+     * user's args starting at `args.arg(1)`. Use this for ALL methods on
+     * peripheral wrapper tables; use [fn] for top-level functions like
+     * `peripheral.find` that are called with `.` syntax.
+     */
+    private inline fun method(self: LuaTable, crossinline body: (Varargs) -> LuaValue): VarArgFunction = object : VarArgFunction() {
+        override fun invoke(state: LuaState, args: Varargs): Varargs = try {
+            // Detect colon-call: when arg(1) is the receiver itself, strip it.
+            // Otherwise leave args as-is so `m.foo(x)` still works.
+            val effective = if (args.count() >= 1 && args.arg(1) === self) args.subargs(2) else args
+            body(effective)
+        } catch (e: StorageException) {
+            throw LuaError(e.message ?: "fs error")
+        } catch (e: PeripheralLease.PeripheralLockException) {
+            throw LuaError(e.message ?: "peripheral locked")
+        }
+    }
+
+    /**
      * Build the `peripheral` table.
      *
      *   `peripheral.find(kind)` → table or nil
@@ -194,15 +216,43 @@ class CobaltLuaHost : ScriptHost {
         is FluidPeripheral -> wrapFluid(p)
         is EnergyPeripheral -> wrapEnergy(p)
         is BlockPeripheral -> wrapBlock(p)
+        is BridgePeripheral -> wrapBridge(p)
         else -> Constants.NIL
+    }
+
+    /**
+     * Bridge surface: `methods()` → list of names, `call(name, ...args)` →
+     * single value or list. Mirrors the contract on [BridgePeripheral]; the
+     * underlying mod's value shapes are passed through via [toLuaValue].
+     */
+    private fun wrapBridge(b: BridgePeripheral): LuaTable {
+        val t = LuaTable()
+        t.rawset("kind", ValueFactory.valueOf(b.kind))
+        t.rawset("name", ValueFactory.valueOf(b.name))
+        t.rawset("protocol", ValueFactory.valueOf(b.protocol))
+        t.rawset("target", ValueFactory.valueOf(b.target))
+        t.rawset("methods", method(t) {
+            val arr = LuaTable()
+            for ((i, m) in b.methods().withIndex()) arr.rawset(i + 1, ValueFactory.valueOf(m))
+            arr
+        })
+        t.rawset("call", method(t) { args ->
+            val name = args.arg(1).toString()
+            val callArgs = mutableListOf<Any?>()
+            // Lua args are 1-indexed; arg 1 is the method name, 2..N are the call payload.
+            for (i in 2..args.count()) callArgs.add(fromLuaValue(args.arg(i)))
+            toLuaValue(b.call(name, callArgs))
+        })
+        t.rawset("describe", method(t) { toLuaValue(b.describe()) })
+        return t
     }
 
     private fun wrapBlock(b: BlockPeripheral): LuaTable {
         val t = LuaTable()
         t.rawset("kind", ValueFactory.valueOf(b.kind))
         t.rawset("name", ValueFactory.valueOf(b.name))
-        t.rawset("read", fn {
-            val r = b.read() ?: return@fn Constants.NIL
+        t.rawset("read", method(t) {
+            val r = b.read() ?: return@method Constants.NIL
             val o = LuaTable()
             o.rawset("id", ValueFactory.valueOf(r.id))
             o.rawset("isAir", ValueFactory.valueOf(r.isAir))
@@ -217,7 +267,7 @@ class CobaltLuaHost : ScriptHost {
             if (r.nbt != null) o.rawset("nbt", ValueFactory.valueOf(r.nbt))
             o
         })
-        t.rawset("harvest", fn { args ->
+        t.rawset("harvest", method(t) { args ->
             val targetTable = args.arg(1) as? LuaTable
             val target = targetTable?.let { invHandles[it] }
             val moved = b.harvest(target)
@@ -235,29 +285,29 @@ class CobaltLuaHost : ScriptHost {
         t.rawset("kind", ValueFactory.valueOf(fl.kind))
         t.rawset("name", ValueFactory.valueOf(fl.name))
         fluidHandles[t] = fl
-        t.rawset("tanks", fn { ValueFactory.valueOf(fl.tanks()) })
-        t.rawset("getFluid", fn { args ->
-            val s = fl.getFluid(args.arg(1).toInteger().toInt()) ?: return@fn Constants.NIL
+        t.rawset("tanks", method(t) { ValueFactory.valueOf(fl.tanks()) })
+        t.rawset("getFluid", method(t) { args ->
+            val s = fl.getFluid(args.arg(1).toInteger().toInt()) ?: return@method Constants.NIL
             fluidSnapshotToTable(s)
         })
-        t.rawset("list", fn {
+        t.rawset("list", method(t) {
             val arr = LuaTable()
             for ((i, snap) in fl.list().withIndex()) {
                 arr.rawset(i + 1, snap?.let { fluidSnapshotToTable(it) } ?: Constants.NIL)
             }
             arr
         })
-        t.rawset("push", fn { args ->
-            val tgt = (args.arg(1) as? LuaTable)?.let { fluidHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+        t.rawset("push", method(t) { args ->
+            val tgt = (args.arg(1) as? LuaTable)?.let { fluidHandles[it] } ?: return@method ValueFactory.valueOf(0)
             val amount = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else 1000
             ValueFactory.valueOf(fl.push(tgt, amount))
         })
-        t.rawset("pull", fn { args ->
-            val src = (args.arg(1) as? LuaTable)?.let { fluidHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+        t.rawset("pull", method(t) { args ->
+            val src = (args.arg(1) as? LuaTable)?.let { fluidHandles[it] } ?: return@method ValueFactory.valueOf(0)
             val amount = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else 1000
             ValueFactory.valueOf(fl.pull(src, amount))
         })
-        t.rawset("destroy", fn { args ->
+        t.rawset("destroy", method(t) { args ->
             val amount = args.arg(1).toInteger().toInt()
             ValueFactory.valueOf(fl.destroy(amount))
         })
@@ -278,19 +328,19 @@ class CobaltLuaHost : ScriptHost {
         t.rawset("kind", ValueFactory.valueOf(en.kind))
         t.rawset("name", ValueFactory.valueOf(en.name))
         energyHandles[t] = en
-        t.rawset("stored", fn { ValueFactory.valueOf(en.stored()) })
-        t.rawset("capacity", fn { ValueFactory.valueOf(en.capacity()) })
-        t.rawset("push", fn { args ->
-            val tgt = (args.arg(1) as? LuaTable)?.let { energyHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+        t.rawset("stored", method(t) { ValueFactory.valueOf(en.stored()) })
+        t.rawset("capacity", method(t) { ValueFactory.valueOf(en.capacity()) })
+        t.rawset("push", method(t) { args ->
+            val tgt = (args.arg(1) as? LuaTable)?.let { energyHandles[it] } ?: return@method ValueFactory.valueOf(0)
             val amount = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else Int.MAX_VALUE
             ValueFactory.valueOf(en.push(tgt, amount))
         })
-        t.rawset("pull", fn { args ->
-            val src = (args.arg(1) as? LuaTable)?.let { energyHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+        t.rawset("pull", method(t) { args ->
+            val src = (args.arg(1) as? LuaTable)?.let { energyHandles[it] } ?: return@method ValueFactory.valueOf(0)
             val amount = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else Int.MAX_VALUE
             ValueFactory.valueOf(en.pull(src, amount))
         })
-        t.rawset("destroy", fn { args ->
+        t.rawset("destroy", method(t) { args ->
             val amount = args.arg(1).toInteger().toInt()
             ValueFactory.valueOf(en.destroy(amount))
         })
@@ -303,9 +353,9 @@ class CobaltLuaHost : ScriptHost {
         val t = LuaTable()
         t.rawset("kind", ValueFactory.valueOf(rs.kind))
         t.rawset("name", ValueFactory.valueOf(rs.name))
-        t.rawset("getInput", fn { ValueFactory.valueOf(rs.getInput()) })
-        t.rawset("getOutput", fn { ValueFactory.valueOf(rs.getOutput()) })
-        t.rawset("setOutput", fn { args ->
+        t.rawset("getInput", method(t) { ValueFactory.valueOf(rs.getInput()) })
+        t.rawset("getOutput", method(t) { ValueFactory.valueOf(rs.getOutput()) })
+        t.rawset("setOutput", method(t) { args ->
             rs.setOutput(args.arg(1).toInteger().toInt())
             Constants.NIL
         })
@@ -424,8 +474,19 @@ class CobaltLuaHost : ScriptHost {
         is Boolean -> ValueFactory.valueOf(v)
         is Int -> ValueFactory.valueOf(v.toDouble())
         is Long -> ValueFactory.valueOf(v.toDouble())
+        is Float -> ValueFactory.valueOf(v.toDouble())
         is Double -> ValueFactory.valueOf(v)
         is String -> ValueFactory.valueOf(v)
+        is List<*> -> {
+            val arr = LuaTable()
+            for ((i, e) in v.withIndex()) arr.rawset(i + 1, toLuaValue(e))
+            arr
+        }
+        is Map<*, *> -> {
+            val tbl = LuaTable()
+            for ((k, vv) in v) tbl.rawset(k.toString(), toLuaValue(vv))
+            tbl
+        }
         else -> ValueFactory.valueOf(v.toString())
     }
 
@@ -468,15 +529,15 @@ class CobaltLuaHost : ScriptHost {
     private fun wrapMonitor(mon: MonitorPeripheral): LuaTable {
         val t = LuaTable()
         t.rawset("kind", ValueFactory.valueOf(mon.kind))
-        t.rawset("write", fn { args ->
+        t.rawset("write", method(t) { args ->
             mon.write(args.arg(1).toString())
             Constants.NIL
         })
-        t.rawset("println", fn { args ->
+        t.rawset("println", method(t) { args ->
             mon.println(args.arg(1).toString())
             Constants.NIL
         })
-        t.rawset("setCursorPos", fn { args ->
+        t.rawset("setCursorPos", method(t) { args ->
             mon.setCursorPos(args.arg(1).toInteger().toInt(), args.arg(2).toInteger().toInt())
             Constants.NIL
         })
@@ -486,7 +547,7 @@ class CobaltLuaHost : ScriptHost {
                 return ValueFactory.varargsOf(ValueFactory.valueOf(col), ValueFactory.valueOf(row))
             }
         })
-        t.rawset("clear", fn {
+        t.rawset("clear", method(t) {
             mon.clear()
             Constants.NIL
         })
@@ -500,27 +561,101 @@ class CobaltLuaHost : ScriptHost {
         // (e.g. 0xFFD4D4D4) round-trip correctly — Lua numbers are doubles, and
         // direct LuaInteger.toInt() truncates to int range losing the high alpha bit.
         // setForegroundColor + CC:T-aligned alias setTextColor
-        val setFg: VarArgFunction = fn { args ->
+        val setFg: VarArgFunction = method(t) { args ->
             mon.setForegroundColor(args.arg(1).toDouble().toLong().toInt())
             Constants.NIL
         }
         t.rawset("setForegroundColor", setFg)
         t.rawset("setTextColor", setFg)
-        t.rawset("setBackgroundColor", fn { args ->
+        t.rawset("setBackgroundColor", method(t) { args ->
             mon.setBackgroundColor(args.arg(1).toDouble().toLong().toInt())
             Constants.NIL
         })
-        t.rawset("pollTouches", fn {
+        t.rawset("pollTouches", method(t) {
             val events = mon.pollTouches()
             val arr = LuaTable()
             for ((i, ev) in events.withIndex()) {
                 val e = LuaTable()
                 e.rawset("col", ValueFactory.valueOf(ev.col))
                 e.rawset("row", ValueFactory.valueOf(ev.row))
+                e.rawset("px", ValueFactory.valueOf(ev.px))
+                e.rawset("py", ValueFactory.valueOf(ev.py))
                 e.rawset("player", ValueFactory.valueOf(ev.playerName))
                 arr.rawset(i + 1, e)
             }
             arr
+        })
+
+        // ---- HD pixel-buffer API ----
+        t.rawset("getPixelSize", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs {
+                val (w, h) = mon.getPixelSize()
+                return ValueFactory.varargsOf(ValueFactory.valueOf(w), ValueFactory.valueOf(h))
+            }
+        })
+        t.rawset("clearPixels", method(t) { args ->
+            mon.clearPixels(args.arg(1).toDouble().toLong().toInt())
+            Constants.NIL
+        })
+        t.rawset("setPixel", method(t) { args ->
+            mon.setPixel(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toDouble().toLong().toInt(),
+            )
+            Constants.NIL
+        })
+        t.rawset("drawRect", method(t) { args ->
+            mon.drawRect(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                args.arg(4).toInteger().toInt(),
+                args.arg(5).toDouble().toLong().toInt(),
+            )
+            Constants.NIL
+        })
+        t.rawset("drawRectOutline", method(t) { args ->
+            val thickness = if (args.count() >= 6 && !args.arg(6).isNil()) args.arg(6).toInteger().toInt() else 1
+            mon.drawRectOutline(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                args.arg(4).toInteger().toInt(),
+                args.arg(5).toDouble().toLong().toInt(),
+                thickness,
+            )
+            Constants.NIL
+        })
+        t.rawset("drawLine", method(t) { args ->
+            mon.drawLine(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                args.arg(4).toInteger().toInt(),
+                args.arg(5).toDouble().toLong().toInt(),
+            )
+            Constants.NIL
+        })
+        t.rawset("drawGradientV", method(t) { args ->
+            mon.drawGradientV(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                args.arg(4).toInteger().toInt(),
+                args.arg(5).toDouble().toLong().toInt(),
+                args.arg(6).toDouble().toLong().toInt(),
+            )
+            Constants.NIL
+        })
+        t.rawset("fillCircle", method(t) { args ->
+            mon.fillCircle(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                args.arg(4).toDouble().toLong().toInt(),
+            )
+            Constants.NIL
         })
         return t
     }
@@ -540,37 +675,37 @@ class CobaltLuaHost : ScriptHost {
         t.rawset("name", ValueFactory.valueOf(inv.name))
         // Stash the native handle so push/pull can resolve "the other end" back to a Peripheral.
         invHandles[t] = inv
-        t.rawset("size", fn { ValueFactory.valueOf(inv.size()) })
-        t.rawset("getItem", fn { args ->
-            val s = inv.getItem(args.arg(1).toInteger().toInt()) ?: return@fn Constants.NIL
+        t.rawset("size", method(t) { ValueFactory.valueOf(inv.size()) })
+        t.rawset("getItem", method(t) { args ->
+            val s = inv.getItem(args.arg(1).toInteger().toInt()) ?: return@method Constants.NIL
             itemSnapshotToTable(s)
         })
-        t.rawset("list", fn {
+        t.rawset("list", method(t) {
             val arr = LuaTable()
             for ((i, snap) in inv.list().withIndex()) {
                 arr.rawset(i + 1, snap?.let { itemSnapshotToTable(it) } ?: Constants.NIL)
             }
             arr
         })
-        t.rawset("find", fn { args ->
+        t.rawset("find", method(t) { args ->
             ValueFactory.valueOf(inv.find(args.arg(1).toString()))
         })
-        t.rawset("destroy", fn { args ->
+        t.rawset("destroy", method(t) { args ->
             val slot = args.arg(1).toInteger().toInt()
             val count = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else Int.MAX_VALUE
             ValueFactory.valueOf(inv.destroy(slot, count))
         })
-        t.rawset("push", fn { args ->
+        t.rawset("push", method(t) { args ->
             val slot = args.arg(1).toInteger().toInt()
             val targetTable = args.arg(2) as? LuaTable
-            val target = targetTable?.let { invHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+            val target = targetTable?.let { invHandles[it] } ?: return@method ValueFactory.valueOf(0)
             val count = if (args.count() >= 3 && !args.arg(3).isNil()) args.arg(3).toInteger().toInt() else 64
             val targetSlot = if (args.count() >= 4 && !args.arg(4).isNil()) args.arg(4).toInteger().toInt() else null
             ValueFactory.valueOf(inv.push(slot, target, count, targetSlot))
         })
-        t.rawset("pull", fn { args ->
+        t.rawset("pull", method(t) { args ->
             val sourceTable = args.arg(1) as? LuaTable
-            val source = sourceTable?.let { invHandles[it] } ?: return@fn ValueFactory.valueOf(0)
+            val source = sourceTable?.let { invHandles[it] } ?: return@method ValueFactory.valueOf(0)
             val slot = args.arg(2).toInteger().toInt()
             val count = if (args.count() >= 3 && !args.arg(3).isNil()) args.arg(3).toInteger().toInt() else 64
             val targetSlot = if (args.count() >= 4 && !args.arg(4).isNil()) args.arg(4).toInteger().toInt() else null

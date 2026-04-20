@@ -33,6 +33,7 @@ object ModTabs {
                 output.accept(ModItems.FLUID_PART)
                 output.accept(ModItems.ENERGY_PART)
                 output.accept(ModItems.BLOCK_PART)
+                output.accept(ModItems.BRIDGE_PART)
             }
             .build()
     }

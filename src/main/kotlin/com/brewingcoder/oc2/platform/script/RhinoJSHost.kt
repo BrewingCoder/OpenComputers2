@@ -2,6 +2,7 @@ package com.brewingcoder.oc2.platform.script
 
 import com.brewingcoder.oc2.platform.os.ShellOutput
 import com.brewingcoder.oc2.platform.peripheral.BlockPeripheral
+import com.brewingcoder.oc2.platform.peripheral.BridgePeripheral
 import com.brewingcoder.oc2.platform.peripheral.EnergyPeripheral
 import com.brewingcoder.oc2.platform.peripheral.FluidPeripheral
 import com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral
@@ -68,6 +69,8 @@ class RhinoJSHost : ScriptHost {
             ScriptResult(ok = false, errorMessage = cleanError(e.message))
         } catch (e: StorageException) {
             ScriptResult(ok = false, errorMessage = "fs error: ${e.message}")
+        } catch (e: PeripheralLease.PeripheralLockException) {
+            ScriptResult(ok = false, errorMessage = "js error: ${e.message}")
         } finally {
             Context.exit()
         }
@@ -119,7 +122,55 @@ class RhinoJSHost : ScriptHost {
         is FluidPeripheral -> wrapFluid(p, parent)
         is EnergyPeripheral -> wrapEnergy(p, parent)
         is BlockPeripheral -> wrapBlock(p, parent)
+        is BridgePeripheral -> wrapBridge(p, parent)
         else -> null
+    }
+
+    /** JS counterpart to [CobaltLuaHost.wrapBridge]. */
+    private fun wrapBridge(b: BridgePeripheral, parent: Scriptable): ScriptableObject {
+        val obj = NativeObject()
+        ScriptableObject.putProperty(obj, "kind", b.kind)
+        ScriptableObject.putProperty(obj, "name", b.name)
+        ScriptableObject.putProperty(obj, "protocol", b.protocol)
+        ScriptableObject.putProperty(obj, "target", b.target)
+        defineFsMethod(obj, "methods", parent, 0) { _ ->
+            val list = b.methods()
+            val arr = cx().newArray(parent, list.size)
+            for ((i, m) in list.withIndex()) arr.put(i, arr, m)
+            arr
+        }
+        defineFsMethod(obj, "call", parent, 2) { args ->
+            val name = args.getOrNull(0) as? String ?: return@defineFsMethod null
+            val callArgs = args.drop(1).map { jsToJava(it) }
+            javaToJs(b.call(name, callArgs), parent)
+        }
+        defineFsMethod(obj, "describe", parent, 0) { _ -> javaToJs(b.describe(), parent) }
+        return obj
+    }
+
+    /** JS → Java boxing for bridge call args. */
+    private fun jsToJava(v: Any?): Any? = when (v) {
+        null, Undefined.instance -> null
+        is Number, is Boolean, is String -> v
+        is NativeArray -> (0 until v.length).map { jsToJava(v.get(it.toInt(), v)) }
+        else -> v.toString()
+    }
+
+    /** Java → JS marshalling for bridge call returns (mirrors [CobaltLuaHost.toLuaValue]). */
+    private fun javaToJs(any: Any?, parent: Scriptable): Any? = when (any) {
+        null -> null
+        is Boolean, is Int, is Long, is Float, is Double, is String -> any
+        is List<*> -> {
+            val arr = cx().newArray(parent, any.size)
+            for ((i, e) in any.withIndex()) arr.put(i, arr, javaToJs(e, parent))
+            arr
+        }
+        is Map<*, *> -> {
+            val o = NativeObject()
+            for ((k, v) in any) ScriptableObject.putProperty(o, k.toString(), javaToJs(v, parent))
+            o
+        }
+        else -> any.toString()
     }
 
     private fun wrapBlock(b: BlockPeripheral, parent: Scriptable): ScriptableObject {
@@ -366,10 +417,75 @@ class RhinoJSHost : ScriptHost {
                 val o = NativeObject()
                 ScriptableObject.putProperty(o, "col", ev.col)
                 ScriptableObject.putProperty(o, "row", ev.row)
+                ScriptableObject.putProperty(o, "px", ev.px)
+                ScriptableObject.putProperty(o, "py", ev.py)
                 ScriptableObject.putProperty(o, "player", ev.playerName)
                 arr.put(i, arr, o)
             }
             arr
+        }
+
+        // ---- HD pixel-buffer API ----
+        defineFsMethod(obj, "getPixelSize", parent, 0) { _ ->
+            val (w, h) = mon.getPixelSize()
+            cx().newArray(parent, arrayOf<Any?>(w, h))
+        }
+        defineFsMethod(obj, "clearPixels", parent, 1) { args ->
+            val argb = (args.getOrNull(0) as? Number)?.toLong()?.toInt() ?: 0
+            mon.clearPixels(argb); Undefined.instance
+        }
+        defineFsMethod(obj, "setPixel", parent, 3) { args ->
+            val x = (args.getOrNull(0) as? Number)?.toInt() ?: 0
+            val y = (args.getOrNull(1) as? Number)?.toInt() ?: 0
+            val argb = (args.getOrNull(2) as? Number)?.toLong()?.toInt() ?: 0
+            mon.setPixel(x, y, argb); Undefined.instance
+        }
+        defineFsMethod(obj, "drawRect", parent, 5) { args ->
+            mon.drawRect(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(3) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(4) as? Number)?.toLong()?.toInt() ?: 0,
+            ); Undefined.instance
+        }
+        defineFsMethod(obj, "drawRectOutline", parent, 6) { args ->
+            val thickness = (args.getOrNull(5) as? Number)?.toInt() ?: 1
+            mon.drawRectOutline(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(3) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(4) as? Number)?.toLong()?.toInt() ?: 0,
+                thickness,
+            ); Undefined.instance
+        }
+        defineFsMethod(obj, "drawLine", parent, 5) { args ->
+            mon.drawLine(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(3) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(4) as? Number)?.toLong()?.toInt() ?: 0,
+            ); Undefined.instance
+        }
+        defineFsMethod(obj, "drawGradientV", parent, 6) { args ->
+            mon.drawGradientV(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(3) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(4) as? Number)?.toLong()?.toInt() ?: 0,
+                (args.getOrNull(5) as? Number)?.toLong()?.toInt() ?: 0,
+            ); Undefined.instance
+        }
+        defineFsMethod(obj, "fillCircle", parent, 4) { args ->
+            mon.fillCircle(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(3) as? Number)?.toLong()?.toInt() ?: 0,
+            ); Undefined.instance
         }
         return obj
     }

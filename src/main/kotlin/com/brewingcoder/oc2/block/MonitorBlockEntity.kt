@@ -49,7 +49,38 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
     MonitorPeripheral {
 
     override var channelId: String = DEFAULT_CHANNEL
-        private set
+        internal set
+
+    /**
+     * Set the wifi channel for this monitor group. **Must be called on the master**
+     * (the network packet handler resolves master from the clicked block). Walks
+     * the group to mirror the channel onto every slave so a future master flip
+     * inherits the correct channel without the GUI having to re-set it.
+     */
+    fun setChannelIdForGroup(newChannel: String) {
+        if (!isServer) return
+        if (!isMaster) return
+        if (newChannel == channelId) return
+        // Re-register the master under the new channel id.
+        ChannelRegistry.unregister(this)
+        channelId = newChannel
+        ChannelRegistry.register(this)
+        // Mirror onto slaves so a future master flip carries the channel forward.
+        // Brute-search a box covering the maximum possible group extent — group
+        // dimensions are bounded by [groupBlocksWide] × [groupBlocksTall] in both
+        // horizontal directions (we don't know which way the slaves extend).
+        val lvl = level ?: return
+        val r = maxOf(groupBlocksWide, groupBlocksTall)
+        for (dx in -r..r) for (dy in -r..r) for (dz in -r..r) {
+            val slavePos = blockPos.offset(dx, dy, dz)
+            if (slavePos == blockPos) continue
+            val slave = lvl.getBlockEntity(slavePos) as? MonitorBlockEntity ?: continue
+            if (slave.masterPos != blockPos) continue
+            slave.channelId = newChannel
+            slave.setChanged()
+        }
+        setChanged()
+    }
 
     override val location: Position
         get() = Position(blockPos.x, blockPos.y, blockPos.z)
@@ -88,6 +119,18 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
      */
     private var bgColors: IntArray? = null
 
+    /**
+     * HD pixel buffer — ARGB ints, row-major, indexed by `y * pxW + x`. Master-only,
+     * null on slaves. Composited UNDER the text grid by the renderer. Default 0 =
+     * fully transparent (block face shows through). Lifecycle mirrors [buffer]:
+     * allocated on master in [applyGroup], freed on slave demotion.
+     */
+    private var pixelBuffer: IntArray? = null
+
+    /** Pixel-buffer dimensions. Computed from group size — see [PX_PER_CELL]. */
+    private val pxW: Int get() = totalCols * PX_PER_CELL
+    private val pxH: Int get() = totalRows * PX_PER_CELL
+
     /** Cursor position used by `write` — master-only. */
     private var cursorRow: Int = 0
     private var cursorCol: Int = 0
@@ -116,7 +159,11 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
     override fun onLoad() {
         super.onLoad()
         if (isServer) {
-            ChannelRegistry.register(this)
+            // Master-only registration. We assume `isMaster=true` on first load
+            // (the default) and let [requestGroupReevaluation] flip + re-register
+            // if a master already exists adjacent. This keeps `peripheral.list`
+            // returning ONE entry per group instead of N.
+            if (isMaster) ChannelRegistry.register(this)
             requestGroupReevaluation()
         }
     }
@@ -125,7 +172,20 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         if (isServer) {
             OpenComputers2.LOGGER.debug("monitor setRemoved @ {} (isMaster={}, group {}x{})",
                 blockPos, isMaster, groupBlocksWide, groupBlocksTall)
-            ChannelRegistry.unregister(this)
+            // Only the master is registered; unregistering a slave is a no-op
+            // but the registry log noise isn't worth it.
+            if (isMaster) ChannelRegistry.unregister(this)
+        } else if (isMaster) {
+            // Client-side: free the GPU texture for this master's pixel buffer.
+            // Schedule on the render thread — setRemoved can fire from any thread.
+            val pos = blockPos
+            try {
+                com.mojang.blaze3d.systems.RenderSystem.recordRenderCall {
+                    com.brewingcoder.oc2.client.screen.MonitorPixelTextureCache.release(pos)
+                }
+            } catch (t: Throwable) {
+                OpenComputers2.LOGGER.warn("monitor pixel-texture release schedule failed @ {}", pos, t)
+            }
         }
         // Don't propagate group re-eval here. Vanilla fires `neighborChanged` on
         // the IMMEDIATE neighbors of the removed block; that's enough for the
@@ -164,11 +224,23 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
 
         val sizeChanged = (groupBlocksWide != group.width) || (groupBlocksTall != group.height)
         val masterChanged = (masterPos != newMasterPos)
+        val wasMaster = isMaster
 
         masterPos = newMasterPos
         groupBlocksWide = group.width
         groupBlocksTall = group.height
         isMaster = newIsMaster
+
+        // Master flip = registry update. Channel propagation across slaves
+        // is handled in [setChannelIdForGroup] on the master, so a freshly-promoted
+        // slave already has the right channelId in its own field.
+        if (isServer) {
+            if (wasMaster && !newIsMaster) {
+                ChannelRegistry.unregister(this)
+            } else if (!wasMaster && newIsMaster) {
+                ChannelRegistry.register(this)
+            }
+        }
 
         if (newIsMaster) {
             // Resize / (re)allocate the buffer + color arrays if any of:
@@ -205,10 +277,17 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
                 cursorRow = cursorRow.coerceAtMost(totalRows - 1)
                 cursorCol = cursorCol.coerceAtMost(totalCols - 1)
             }
+            // Pixel buffer — fresh allocate or resize. Don't copy old pixels
+            // across resizes (rare event; HD content rarely outlives a relayout).
+            val targetPx = pxW * pxH
+            if (pixelBuffer == null || pixelBuffer!!.size != targetPx) {
+                pixelBuffer = IntArray(targetPx)  // 0 = transparent
+            }
         } else {
             buffer = null
             fgColors = null
             bgColors = null
+            pixelBuffer = null
             cursorRow = 0
             cursorCol = 0
         }
@@ -239,21 +318,26 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
     //     fails when called off-thread (observed: m.write from worker = no client
     //     update → buttons don't appear on the monitor)
     //   - Even read-only methods need consistent visibility against tick-thread mutations
+    //
+    // Mutating methods MUST acquire the peripheral lease BEFORE marshaling to the
+    // server thread — the lease is keyed off ScriptCallerContext (a ThreadLocal set
+    // on the worker), which is null on the server thread. Acquiring after the marshal
+    // would silently no-op.
 
-    override fun write(text: String) = onServerThread {
+    private fun lease() = com.brewingcoder.oc2.platform.script.PeripheralLease.acquireOrThrow(this)
+
+    override fun write(text: String): Unit { lease(); onServerThread {
         forMaster { it.doWriteText(text) }
-        Unit
-    }
+    } }
 
-    override fun setCursorPos(col: Int, row: Int) = onServerThread {
+    override fun setCursorPos(col: Int, row: Int): Unit { lease(); onServerThread {
         forMaster { master ->
             master.cursorCol = col.coerceIn(0, master.totalCols - 1)
             master.cursorRow = row.coerceIn(0, master.totalRows - 1)
         }
-        Unit
-    }
+    } }
 
-    override fun clear() = onServerThread {
+    override fun clear(): Unit { lease(); onServerThread {
         forMaster { master ->
             val buf = master.buffer ?: return@forMaster
             for (row in buf) row.fill(' ')
@@ -264,8 +348,7 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
             master.setChanged()
             master.sync()
         }
-        Unit
-    }
+    } }
 
     override fun getSize(): Pair<Int, Int> = onServerThread {
         forMaster { master -> master.totalCols to master.totalRows } ?: (0 to 0)
@@ -275,15 +358,13 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         forMaster { master -> master.cursorCol to master.cursorRow } ?: (0 to 0)
     }
 
-    override fun setForegroundColor(color: Int) = onServerThread {
+    override fun setForegroundColor(color: Int): Unit { lease(); onServerThread {
         forMaster { master -> master.currentFg = color }
-        Unit
-    }
+    } }
 
-    override fun setBackgroundColor(color: Int) = onServerThread {
+    override fun setBackgroundColor(color: Int): Unit { lease(); onServerThread {
         forMaster { master -> master.currentBg = color }
-        Unit
-    }
+    } }
 
     override fun pollTouches(): List<TouchEvent> = onServerThread {
         forMaster { master ->
@@ -291,6 +372,131 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
             master.touchQueue.clear()
             drained
         } ?: emptyList()
+    }
+
+    // ---- HD pixel-buffer API ----
+
+    override fun getPixelSize(): Pair<Int, Int> = onServerThread {
+        forMaster { master -> master.pxW to master.pxH } ?: (0 to 0)
+    }
+
+    override fun clearPixels(argb: Int): Unit { lease(); onServerThread {
+        forMaster { master ->
+            val buf = master.pixelBuffer ?: return@forMaster
+            buf.fill(argb)
+            master.setChanged(); master.sync()
+        }
+    } }
+
+    override fun setPixel(x: Int, y: Int, argb: Int): Unit { lease(); onServerThread {
+        forMaster { master ->
+            val buf = master.pixelBuffer ?: return@forMaster
+            if (x < 0 || y < 0 || x >= master.pxW || y >= master.pxH) return@forMaster
+            buf[y * master.pxW + x] = argb
+            master.setChanged(); master.sync()
+        }
+    } }
+
+    override fun drawRect(x: Int, y: Int, w: Int, h: Int, argb: Int): Unit { lease(); onServerThread {
+        forMaster { master -> master.fillRectImpl(x, y, w, h, argb); master.setChanged(); master.sync() }
+    } }
+
+    override fun drawRectOutline(x: Int, y: Int, w: Int, h: Int, argb: Int, thickness: Int): Unit { lease(); onServerThread {
+        forMaster { master ->
+            val t = thickness.coerceAtLeast(1)
+            // Top, bottom, left, right strips — overlap at corners is fine (same color).
+            master.fillRectImpl(x, y, w, t, argb)
+            master.fillRectImpl(x, y + h - t, w, t, argb)
+            master.fillRectImpl(x, y, t, h, argb)
+            master.fillRectImpl(x + w - t, y, t, h, argb)
+            master.setChanged(); master.sync()
+        }
+    } }
+
+    override fun drawLine(x1: Int, y1: Int, x2: Int, y2: Int, argb: Int): Unit { lease(); onServerThread {
+        forMaster { master ->
+            val buf = master.pixelBuffer ?: return@forMaster
+            // Bresenham
+            var x = x1; var y = y1
+            val dx = kotlin.math.abs(x2 - x1)
+            val dy = kotlin.math.abs(y2 - y1)
+            val sx = if (x1 < x2) 1 else -1
+            val sy = if (y1 < y2) 1 else -1
+            var err = dx - dy
+            val w = master.pxW; val h = master.pxH
+            while (true) {
+                if (x in 0 until w && y in 0 until h) buf[y * w + x] = argb
+                if (x == x2 && y == y2) break
+                val e2 = err shl 1
+                if (e2 > -dy) { err -= dy; x += sx }
+                if (e2 < dx) { err += dx; y += sy }
+            }
+            master.setChanged(); master.sync()
+        }
+    } }
+
+    override fun drawGradientV(x: Int, y: Int, w: Int, h: Int, topArgb: Int, bottomArgb: Int): Unit { lease(); onServerThread {
+        forMaster { master ->
+            val buf = master.pixelBuffer ?: return@forMaster
+            val pxW = master.pxW; val pxH = master.pxH
+            val x0 = x.coerceAtLeast(0); val x1 = (x + w).coerceAtMost(pxW)
+            val y0 = y.coerceAtLeast(0); val y1 = (y + h).coerceAtMost(pxH)
+            if (x1 <= x0 || y1 <= y0 || h <= 0) return@forMaster
+            for (yy in y0 until y1) {
+                val t = (yy - y).toFloat() / h.toFloat()
+                val color = lerpArgb(topArgb, bottomArgb, t.coerceIn(0f, 1f))
+                val rowBase = yy * pxW
+                for (xx in x0 until x1) buf[rowBase + xx] = color
+            }
+            master.setChanged(); master.sync()
+        }
+    } }
+
+    override fun fillCircle(cx: Int, cy: Int, r: Int, argb: Int): Unit { lease(); onServerThread {
+        forMaster { master ->
+            val buf = master.pixelBuffer ?: return@forMaster
+            if (r <= 0) return@forMaster
+            val pxW = master.pxW; val pxH = master.pxH
+            val r2 = r * r
+            val y0 = (cy - r).coerceAtLeast(0); val y1 = (cy + r).coerceAtMost(pxH - 1)
+            val x0 = (cx - r).coerceAtLeast(0); val x1 = (cx + r).coerceAtMost(pxW - 1)
+            for (yy in y0..y1) {
+                val dy = yy - cy
+                val rowBase = yy * pxW
+                for (xx in x0..x1) {
+                    val dx = xx - cx
+                    if (dx * dx + dy * dy <= r2) buf[rowBase + xx] = argb
+                }
+            }
+            master.setChanged(); master.sync()
+        }
+    } }
+
+    /** Internal — clipped rectangle fill into the master's pixelBuffer. No setChanged/sync (caller handles). */
+    private fun fillRectImpl(x: Int, y: Int, w: Int, h: Int, argb: Int) {
+        val buf = pixelBuffer ?: return
+        val x0 = x.coerceAtLeast(0); val x1 = (x + w).coerceAtMost(pxW)
+        val y0 = y.coerceAtLeast(0); val y1 = (y + h).coerceAtMost(pxH)
+        if (x1 <= x0 || y1 <= y0) return
+        for (yy in y0 until y1) {
+            val rowBase = yy * pxW
+            for (xx in x0 until x1) buf[rowBase + xx] = argb
+        }
+    }
+
+    /** Linear ARGB lerp. t in [0,1]. */
+    private fun lerpArgb(a: Int, b: Int, t: Float): Int {
+        val ia = ((a ushr 24) and 0xFF) + (((b ushr 24) and 0xFF) - ((a ushr 24) and 0xFF)) * t
+        val ir = ((a ushr 16) and 0xFF) + (((b ushr 16) and 0xFF) - ((a ushr 16) and 0xFF)) * t
+        val ig = ((a ushr 8) and 0xFF) + (((b ushr 8) and 0xFF) - ((a ushr 8) and 0xFF)) * t
+        val ib = (a and 0xFF) + ((b and 0xFF) - (a and 0xFF)) * t
+        return (ia.toInt() shl 24) or (ir.toInt() shl 16) or (ig.toInt() shl 8) or ib.toInt()
+    }
+
+    /** Read-only pixel snapshot for the renderer. Returns (width, height, argb[]) or null on slaves. */
+    fun pixelSnapshot(): Triple<Int, Int, IntArray>? {
+        val buf = pixelBuffer ?: return null
+        return Triple(pxW, pxH, buf.copyOf())
     }
 
     /**
@@ -313,20 +519,21 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
      * [MonitorBlock.useWithoutItem] after computing (col, row) from the hit
      * position. Drops oldest if the queue exceeds [MonitorPeripheral.TOUCH_QUEUE_CAP].
      */
-    fun enqueueTouch(col: Int, row: Int, playerName: String) {
+    fun enqueueTouch(col: Int, row: Int, px: Int, py: Int, playerName: String) {
         forMaster { master ->
-            master.touchQueue.addLast(TouchEvent(col, row, playerName))
+            master.touchQueue.addLast(TouchEvent(col, row, px, py, playerName))
             while (master.touchQueue.size > MonitorPeripheral.TOUCH_QUEUE_CAP) {
                 master.touchQueue.removeFirst()
             }
             // Also fire as an os.pullEvent("monitor_touch") to any running scripts
             // on this monitor's channel. Polling pollTouches() still works in
-            // parallel — both APIs coexist.
+            // parallel — both APIs coexist. Event payload includes both cell
+            // coords (legacy) and pixel coords (HD hit-testing).
             com.brewingcoder.oc2.event.EventDispatch.fireToChannel(
                 master.channelId,
                 com.brewingcoder.oc2.platform.script.ScriptEvent(
                     "monitor_touch",
-                    listOf(col, row, playerName),
+                    listOf(col, row, px, py, playerName),
                 ),
             )
         }
@@ -513,6 +720,13 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         buffer?.let { tag.putString(NBT_BUFFER, it.joinToString("\n") { row -> String(row) }) }
         fgColors?.let { tag.putIntArray(NBT_FG, it) }
         bgColors?.let { tag.putIntArray(NBT_BG, it) }
+        // Pixel buffer — deflate-compressed bytes. Sparse content (mostly 0)
+        // compresses ~50:1; saves a 4×3 monitor at ~25KB instead of 1.2MB.
+        pixelBuffer?.let { px ->
+            tag.putByteArray(NBT_PX, deflateInts(px))
+            tag.putInt(NBT_PX_W, pxW)
+            tag.putInt(NBT_PX_H, pxH)
+        }
     }
 
     override fun loadAdditional(tag: CompoundTag, registries: HolderLookup.Provider) {
@@ -543,6 +757,53 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
             val arr = tag.getIntArray(NBT_BG)
             bgColors = if (arr.size == totalRows * totalCols) arr else IntArray(totalRows * totalCols) { DEFAULT_BG }
         }
+        if (tag.contains(NBT_PX)) {
+            val savedW = if (tag.contains(NBT_PX_W)) tag.getInt(NBT_PX_W) else pxW
+            val savedH = if (tag.contains(NBT_PX_H)) tag.getInt(NBT_PX_H) else pxH
+            val expected = pxW * pxH
+            val decoded = inflateInts(tag.getByteArray(NBT_PX), savedW * savedH)
+            // Drop the saved pixel buffer if dimensions don't match the current
+            // group — a resize between save and load. Cheaper than rescaling pixels.
+            pixelBuffer = if (decoded != null && decoded.size == expected) decoded else IntArray(expected)
+        }
+    }
+
+    /** Compress an int[] to bytes via Deflater (4 bytes per int, then deflate). */
+    private fun deflateInts(arr: IntArray): ByteArray {
+        val raw = java.nio.ByteBuffer.allocate(arr.size * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (v in arr) raw.putInt(v)
+        val deflater = java.util.zip.Deflater(java.util.zip.Deflater.BEST_SPEED)
+        deflater.setInput(raw.array())
+        deflater.finish()
+        val out = java.io.ByteArrayOutputStream(arr.size)
+        val tmp = ByteArray(8192)
+        while (!deflater.finished()) {
+            val n = deflater.deflate(tmp)
+            out.write(tmp, 0, n)
+        }
+        deflater.end()
+        return out.toByteArray()
+    }
+
+    /** Inverse of [deflateInts]. Returns null on decompression failure. */
+    private fun inflateInts(bytes: ByteArray, expectedInts: Int): IntArray? = try {
+        val inflater = java.util.zip.Inflater()
+        inflater.setInput(bytes)
+        val raw = ByteArray(expectedInts * 4)
+        var off = 0
+        val tmp = ByteArray(8192)
+        while (!inflater.finished() && off < raw.size) {
+            val n = inflater.inflate(tmp)
+            if (n == 0) break
+            System.arraycopy(tmp, 0, raw, off, n)
+            off += n
+        }
+        inflater.end()
+        val buf = java.nio.ByteBuffer.wrap(raw).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        IntArray(expectedInts) { buf.int }
+    } catch (t: Throwable) {
+        OpenComputers2.LOGGER.warn("MonitorBlockEntity: pixel buffer inflate failed", t)
+        null
     }
 
     override fun getUpdatePacket(): Packet<ClientGamePacketListener> =
@@ -584,6 +845,14 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         const val COLS_PER_BLOCK = 20
         const val ROWS_PER_BLOCK = 9
 
+        /**
+         * HD pixel-buffer density per character cell. Pixel buffer dimensions
+         * are `groupCols * COLS_PER_BLOCK * PX_PER_CELL` × `groupRows * ROWS_PER_BLOCK * PX_PER_CELL`.
+         * 12 px/cell = 240 px per block face, comfortable on 1080p+ at moderate zoom
+         * without exploding GPU/NBT memory on huge groups.
+         */
+        const val PX_PER_CELL = 12
+
         private const val NBT_CHANNEL = "channelId"
         private const val NBT_IS_MASTER = "isMaster"
         private const val NBT_MASTER_POS = "masterPos"
@@ -596,6 +865,9 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         private const val NBT_BG = "bg"
         private const val NBT_CUR_FG = "curFg"
         private const val NBT_CUR_BG = "curBg"
+        private const val NBT_PX = "px"
+        private const val NBT_PX_W = "pxW"
+        private const val NBT_PX_H = "pxH"
 
         /** VS Dark editor.foreground — matches the GUI terminal's text color. */
         const val DEFAULT_FG = 0xFFD4D4D4.toInt()

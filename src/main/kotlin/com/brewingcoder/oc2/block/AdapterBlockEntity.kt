@@ -19,6 +19,8 @@ import net.minecraft.network.protocol.game.ClientGamePacketListener
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.state.BlockState
+import java.util.concurrent.TimeUnit
+import java.util.function.Supplier
 
 /**
  * Adapter BE — the multi-part block. Holds up to one [Part] per face (6 max);
@@ -305,6 +307,17 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
             target: com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral?,
         ): List<com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral.ItemSnapshot> =
             BlockPartOps.harvest(level, blockPos, face, target)
+
+        override fun adjacentBlockEntity(): Any? {
+            val lvl = level ?: return null
+            // Same off-thread marshal pattern as BlockPartOps — script worker
+            // threads can't safely touch level chunks, so submit to the server
+            // thread and block briefly. 5s matches BlockPartOps.
+            val target = blockPos.relative(face)
+            val server = lvl.server ?: return lvl.getBlockEntity(target)
+            if (server.isSameThread) return lvl.getBlockEntity(target)
+            return server.submit(Supplier { lvl.getBlockEntity(target) }).get(5, TimeUnit.SECONDS)
+        }
     }
 
     private fun ensureAdapterId() {

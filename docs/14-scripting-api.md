@@ -13,16 +13,20 @@ Both languages see the **same surface area** — `print`, `sleep`, `fs.*`,
 - Scripts run on **per-script worker threads** — never on the server tick
 - **Multi-script per Computer** — one foreground (terminal-attached) plus
   any number of background scripts. `run` starts foreground; `bg` starts
-  background; `jobs` lists; `fg <pid>` promotes; `kill [pid]` terminates
+  background; `jobs` lists; `fg <pid>` promotes; `kill [pid]` terminates;
+  `tail [pid] [-n N]` shows the recent output of any script
 - `sleep(ms)` blocks the worker thread; **does not block** the server tick
 - `os.pullEvent` blocks until a matching event arrives — same mechanism;
   worker parks, server keeps ticking
 - Peripheral method calls **marshal to the server thread** internally
   (worker waits up to one tick — typical latency 0–50ms per call)
 - `print(...)` from the foreground script flushes live to the open Computer
-  terminal each tick; buffers when the screen is closed and replays on next
-  open. Background-script print output is drained but **not displayed** today
-  (per-bg log viewing is on the followups list)
+  terminal each tick. Background-script print output goes to a per-script
+  bounded tail buffer (200 lines) — read it with `tail` / `tail <pid>`.
+  Bg scripts that crash with an unhandled error also surface a
+  `[bg pid=N name] crashed: <msg>` banner in the foreground terminal —
+  same model as Java/C# unhandled-exception printing to stderr. `pcall` /
+  `try/catch` suppress as expected.
 
 ## Computer power state
 
@@ -159,7 +163,7 @@ it). Use `.name` to disambiguate when several adapters expose the same kind.
 Acquired via `peripheral.find("monitor")`. Multi-block monitors expose a
 single character grid spanning the full group.
 
-### Output
+### Output (text grid)
 
 | Method | Notes |
 |---|---|
@@ -171,20 +175,57 @@ single character grid spanning the full group.
 | `m.getSize()` | returns `(cols, rows)` |
 | `m.setForegroundColor(c)` | ARGB int |
 | `m.setTextColor(c)` | alias for `setForegroundColor` (CC:T-aligned) |
-| `m.setBackgroundColor(c)` | ARGB int; `0` = transparent |
+| `m.setBackgroundColor(c)` | ARGB int; `0` = transparent (text grid only — pixel layer below shows through) |
 
-### Touch input (polling — R1)
+### Output (HD pixel layer)
 
+The pixel buffer renders BELOW the cell grid, so text overlays graphics.
+12 px per cell; an 80×27 cell group is 960×324 px. Persisted in NBT.
+
+| Method | Notes |
+|---|---|
+| `m.getPixelSize()` | returns `(pxW, pxH)` |
+| `m.clearPixels(argb)` | fill the entire pixel layer |
+| `m.setPixel(x, y, argb)` | single pixel; out-of-range silently dropped |
+| `m.drawRect(x, y, w, h, argb)` | filled rect (clipped to surface) |
+| `m.drawRectOutline(x, y, w, h, argb, thickness?)` | outlined rect; thickness defaults to 1 |
+| `m.drawLine(x1, y1, x2, y2, argb)` | Bresenham line |
+| `m.drawGradientV(x, y, w, h, topArgb, bottomArgb)` | vertical lerp |
+| `m.fillCircle(cx, cy, r, argb)` | filled circle |
+
+### Touch input
+
+Two equivalent surfaces:
+
+**Polling** (drains a queue of up to 32 events):
 ```lua
-local touches = m.pollTouches()
-for _, t in ipairs(touches) do
-  print(t.col, t.row, t.player)
+for _, t in ipairs(m.pollTouches()) do
+  print(t.col, t.row, t.px, t.py, t.player)
 end
 ```
 
-`m.pollTouches()` drains the queue (up to 32 events). Players right-click the
-monitor face to register touches. Event-driven `m.onTouch(handler)` lands in
-R2 with cooperative scheduling.
+**Event-driven** (cooperative scheduling — R2):
+```lua
+local _, col, row, px, py, player = os.pullEvent("monitor_touch")
+```
+
+Touch payload includes both cell coords (`col`, `row`) for text-grid hit
+testing AND pixel coords (`px`, `py`) for HD-layer hit testing — match the
+button-bounds check to whichever rendering surface the button lives on.
+
+### Per-script peripheral lease
+
+The first script to mutate a monitor (or any peripheral with a lease check)
+implicitly leases it for the script's lifetime. A second script trying to
+mutate the same monitor sees:
+
+```
+peripheral monitor is held by pid=3 (reactor.lua) -- kill it or wait
+```
+
+thrown as a `LuaError` / `js error`. Lease auto-releases when the holder
+script ends (kill / crash / normal exit). Read-only methods (`getSize`,
+`getPixelSize`, `pollTouches`) skip the lease — many readers, one writer.
 
 ### ANSI escape sequences
 
@@ -398,6 +439,39 @@ else
   rs.setOutput(0)
 end
 ```
+
+### `bridge` — universal protocol shim
+
+Install a Bridge Part on an Adapter face touching anything scriptable from
+another mod (Big/Extreme Reactors, ZeroCore turbines/energizers, future: any
+CC `IPeripheral` mod). The Bridge introspects the adjacent BlockEntity and
+surfaces its API generically.
+
+| Property/Method | Notes |
+|---|---|
+| `b.protocol` | adapter id (`"zerocore"`, future: `"cc"`, `"caps"`); `"none"` if nothing claimed the BE |
+| `b.target` | underlying BE class FQN (or block id) — diagnostic only |
+| `b.methods()` | list of method names on the underlying peripheral |
+| `b.call(name, ...args)` | invoke a method, returns single value or list |
+| `b.describe()` | self-introspection map: `{protocol, name, target, methods, state, errors}` — probes every method with no args; great for "what can I do here?" exploration |
+
+Method names + value shapes are **mod-specific** — the bridge does no
+normalization. Scripts are talking to the underlying mod's API, OC2 is just
+the courier. Use `b.describe()` to discover what's available:
+
+```lua
+local r = peripheral.find("bridge")
+print(r.protocol, r.target)
+print(json.encode(r.describe()))         -- structured discovery dump
+
+-- Driving an Extreme Reactor:
+print(r.call("getEnergyStored"), "/", r.call("getEnergyCapacity"))
+r.call("setActive", true)
+r.call("setAllControlRodLevels", 50)     -- 50% inserted across all rods
+```
+
+Both `r.call(...)` (dot-syntax) and `r:call(...)` (colon-syntax) work
+identically — the wrappers detect and strip the implicit receiver.
 
 ## `network` — wifi messaging between computers
 

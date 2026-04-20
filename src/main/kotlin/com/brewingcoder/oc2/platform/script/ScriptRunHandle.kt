@@ -4,6 +4,7 @@ import com.brewingcoder.oc2.platform.network.NetworkAccess
 import com.brewingcoder.oc2.platform.os.ShellOutput
 import com.brewingcoder.oc2.platform.peripheral.Peripheral
 import com.brewingcoder.oc2.platform.storage.WritableMount
+import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -41,6 +42,20 @@ class ScriptRunHandle(
     private val outputQueue: ConcurrentLinkedQueue<OutputItem> = ConcurrentLinkedQueue()
     private val killFlag: AtomicBoolean = AtomicBoolean(false)
 
+    /**
+     * Per-script bounded ring of recent output lines. Captured at offer-time so
+     * background scripts (whose `outputQueue` is drained-and-dropped) still have
+     * a viewable history via `tail <pid>` shell command and the oc2-debug
+     * `read_script_log` tool. Bounded to [TAIL_BUFFER_LINES] entries.
+     */
+    private val tailBuffer: ConcurrentLinkedDeque<String> = ConcurrentLinkedDeque()
+
+    /** Push a line into the bounded tail buffer, evicting the oldest if over cap. */
+    private fun appendTail(line: String) {
+        tailBuffer.addLast(line)
+        while (tailBuffer.size > TAIL_BUFFER_LINES) tailBuffer.pollFirst()
+    }
+
     /** Per-script event queue exposed to the env's `os.pullEvent` binding. */
     val eventQueue: ScriptEventQueue = ScriptEventQueue()
 
@@ -57,7 +72,12 @@ class ScriptRunHandle(
     companion object {
         /** Sentinel error message for kills — the BE checks this to print the right banner. */
         const val KILLED: String = "killed"
+        /** Per-script tail-buffer cap. Same order of magnitude as the per-BE foreground buffer. */
+        const val TAIL_BUFFER_LINES: Int = 200
     }
+
+    /** Snapshot of the recent output, oldest → newest. Up to [TAIL_BUFFER_LINES] entries. */
+    fun tail(): List<String> = tailBuffer.toList()
 
     fun isDone(): Boolean = done
     fun result(): ScriptResult? = resultRef
@@ -66,6 +86,7 @@ class ScriptRunHandle(
     fun start() {
         check(thread == null) { "already started" }
         val t = Thread({
+            ScriptCallerContext.set(pid, chunkName)
             try {
                 val r = host.eval(source, chunkName, makeEnv())
                 // If the kill flag was raised, the eval likely terminated via an
@@ -78,6 +99,13 @@ class ScriptRunHandle(
                 resultRef = ScriptResult(ok = false, errorMessage = "worker crashed: ${t::class.simpleName}: ${t.message}")
             } finally {
                 done = true
+                // Release any peripheral leases this script held — next script
+                // touching those peripherals takes them over cleanly.
+                PeripheralLease.releaseFor(pid)
+                ScriptCallerContext.clear()
+                // Stamp the final result into the tail buffer so `tail <pid>` shows
+                // why a script ended even after its outputQueue is drained.
+                resultRef?.errorMessage?.let { appendTail("[end] $it") }
             }
         }, "OC2 script worker pid=$pid").apply { isDaemon = true }
         thread = t
@@ -106,10 +134,12 @@ class ScriptRunHandle(
             override fun println(line: String) {
                 if (killFlag.get()) throw InterruptedException("killed")
                 outputQueue.offer(OutputItem.Line(line))
+                appendTail(line)
             }
             override fun clear() {
                 if (killFlag.get()) throw InterruptedException("killed")
                 outputQueue.offer(OutputItem.Clear)
+                appendTail("--- clear ---")
             }
         }
         override fun findPeripheral(kind: String): Peripheral? = peripheralFinder(kind)

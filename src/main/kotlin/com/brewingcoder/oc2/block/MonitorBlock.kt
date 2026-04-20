@@ -95,11 +95,18 @@ class MonitorBlock(properties: Properties) : BaseEntityBlock(properties) {
          * Mirrors the geometry derivation in MonitorRenderer so the cell a script
          * sees on touch is the same cell the player visually clicked on.
          */
+        /**
+         * Resolved touch coordinates inside the master's full group surface.
+         * `col`/`row` are the legacy character-cell coordinate; `px`/`py` are
+         * the HD pixel-grid coordinate (use these for graphical button hit-testing).
+         */
+        data class Hit(val col: Int, val row: Int, val px: Int, val py: Int)
+
         fun hitToCell(
             facing: Direction,
             master: MonitorBlockEntity,
             hit: net.minecraft.world.phys.Vec3,
-        ): Pair<Int, Int>? {
+        ): Hit? {
             val groupW = master.groupBlocksWide
             val groupH = master.groupBlocksTall
             val mp = master.blockPos
@@ -120,7 +127,11 @@ class MonitorBlock(properties: Properties) : BaseEntityBlock(properties) {
             val totalRows = groupH * MonitorBlockEntity.ROWS_PER_BLOCK
             val col = floor(adjX / drawableW * totalCols).toInt().coerceIn(0, totalCols - 1)
             val row = floor(adjY / drawableH * totalRows).toInt().coerceIn(0, totalRows - 1)
-            return col to row
+            val pxW = totalCols * MonitorBlockEntity.PX_PER_CELL
+            val pxH = totalRows * MonitorBlockEntity.PX_PER_CELL
+            val px = floor(adjX / drawableW * pxW).toInt().coerceIn(0, pxW - 1)
+            val py = floor(adjY / drawableH * pxH).toInt().coerceIn(0, pxH - 1)
+            return Hit(col, row, px, py)
         }
     }
 }

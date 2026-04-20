@@ -33,7 +33,7 @@ object DefaultCommands {
             MkdirCommand(), RmCommand(), CatCommand(), WriteCommand(),
             ClearCommand(), IdCommand(), DfCommand(),
             RunCommand(hosts), BgCommand(hosts),
-            PsCommand(), JobsCommand(), FgCommand(), KillCommand(),
+            PsCommand(), JobsCommand(), FgCommand(), KillCommand(), TailCommand(),
         )
         val all = core.toMutableList<ShellCommand>()
         all.add(HelpCommand { all })  // help references the full set
@@ -395,6 +395,53 @@ class JobsCommand : ShellCommand {
             val state = if (h.isDone()) "done" else "running"
             ctx.out.println("[${h.pid}] $tag $state  ${h.chunkName}")
         }
+        return 0
+    }
+}
+
+class TailCommand : ShellCommand {
+    override val name = "tail"
+    override val summary = "show recent output of any running/finished script (tail [pid] [-n N])"
+    override fun run(args: List<String>, ctx: ShellContext): Int {
+        // Parse: pid (optional, defaults to most recent) and -n N (default 20)
+        var pid: Int? = null
+        var n: Int = 20
+        var i = 0
+        while (i < args.size) {
+            when (val a = args[i]) {
+                "-n" -> {
+                    val v = args.getOrNull(i + 1) ?: run {
+                        ctx.out.println("tail: -n requires a number")
+                        return 2
+                    }
+                    n = v.toIntOrNull() ?: run {
+                        ctx.out.println("tail: -n value must be a number")
+                        return 2
+                    }
+                    i += 2
+                }
+                else -> {
+                    val parsed = a.toIntOrNull() ?: run {
+                        ctx.out.println("tail: pid must be a number, got '$a'")
+                        return 2
+                    }
+                    pid = parsed
+                    i += 1
+                }
+            }
+        }
+        val all = ctx.scriptRunner.all()
+        if (all.isEmpty()) { ctx.out.println("(no scripts to tail)"); return 0 }
+        val target = if (pid == null) all.last() else all.firstOrNull { it.pid == pid }
+            ?: run {
+                ctx.out.println("tail: no script with pid=$pid")
+                return 1
+            }
+        val lines = target.tail()
+        val state = if (target.isDone()) "done" else "running"
+        ctx.out.println("[${target.pid}] ${target.chunkName} ($state) — last ${minOf(n, lines.size)} of ${lines.size}")
+        val from = maxOf(0, lines.size - n)
+        for (j in from until lines.size) ctx.out.println(lines[j])
         return 0
     }
 }

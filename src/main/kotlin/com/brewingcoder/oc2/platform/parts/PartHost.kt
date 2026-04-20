@@ -61,6 +61,18 @@ interface PartHost {
     fun harvestAdjacentBlock(
         target: com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral?,
     ): List<com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral.ItemSnapshot>
+
+    /**
+     * Live BlockEntity adjacent to this part's face. Returns [Any]? so this
+     * interface stays MC-import-free; concrete consumers (BridgePart and its
+     * ProtocolAdapters in `block/bridge/`) cast to `BlockEntity`.
+     *
+     * Returns null when the adjacent block has no BlockEntity, or when called
+     * off-thread / during world unload. **Server-thread access only** — the
+     * BridgePart contract requires its peripheral methods to run on the server
+     * thread (which the Adapter BE marshals).
+     */
+    fun adjacentBlockEntity(): Any?
 }
 
 /**

@@ -128,6 +128,14 @@ interface ScriptRunner {
     /** Kill the script with this pid (foreground or background). */
     fun killByPid(pid: Int): Boolean = false
 
+    /**
+     * Kill every script (foreground + background). Used when the host BE is
+     * removed/unloaded — keeps scripts from continuing to call into external
+     * mods after their world context is gone, which surfaces as ugly
+     * NullPointerException log spam from the target mod.
+     */
+    fun killAll() { all().forEach { if (!it.isDone()) it.kill() } }
+
     /** Promote a background script to foreground. Only allowed when no foreground is running. */
     fun moveToForeground(pid: Int): Boolean = false
 

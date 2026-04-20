@@ -152,6 +152,30 @@ class InventoryBindingTest {
         out.lines shouldBe listOf("3", "-1")
     }
 
+    @Test
+    fun `lua peripheral methods accept both colon-call and dot-call syntax`() {
+        // Regression: prior to the `method(self) {...}` helper, `inv:foo(x)` desugared
+        // to `inv.foo(inv, x)` and the wrapper read `inv` as the first user arg —
+        // resulting in `tostring(table)` ("table: HASH") landing where `x` should be.
+        val a = FakeInv("a", 5).apply { setSlot(2, ItemSnapshot("minecraft:emerald", 7)) }
+        val out = CapturingOut()
+        val r = CobaltLuaHost().eval("""
+            local inv = peripheral.find("inventory")
+            -- dot syntax (no implicit self)
+            print(inv.getItem(2).id, inv.getItem(2).count)
+            -- colon syntax (implicit self prepended) MUST give the same result
+            print(inv:getItem(2).id, inv:getItem(2).count)
+            -- size() with no args via both
+            print(inv.size(), inv:size())
+        """.trimIndent(), "colon.lua", FakeEnv(mount(), "", out, listOf(a)))
+        r.ok shouldBe true
+        out.lines shouldBe listOf(
+            "minecraft:emerald\t7",
+            "minecraft:emerald\t7",
+            "5\t5",
+        )
+    }
+
     // ---------- JS ----------
 
     @Test

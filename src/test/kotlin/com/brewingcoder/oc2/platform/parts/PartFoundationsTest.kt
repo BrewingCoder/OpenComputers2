@@ -41,6 +41,7 @@ class PartFoundationsTest {
         override fun writeRedstoneSignal(level: Int) {}
         override fun readAdjacentBlock(): com.brewingcoder.oc2.platform.peripheral.BlockPeripheral.BlockReadout? = null
         override fun harvestAdjacentBlock(target: com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral?): List<com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral.ItemSnapshot> = emptyList()
+        override fun adjacentBlockEntity(): Any? = null
     }
 
     @Test

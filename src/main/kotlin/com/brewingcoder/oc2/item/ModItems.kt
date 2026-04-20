@@ -3,6 +3,7 @@ package com.brewingcoder.oc2.item
 import com.brewingcoder.oc2.OpenComputers2
 import com.brewingcoder.oc2.block.ModBlocks
 import com.brewingcoder.oc2.block.parts.BlockPart
+import com.brewingcoder.oc2.block.parts.BridgePart
 import com.brewingcoder.oc2.block.parts.EnergyPart
 import com.brewingcoder.oc2.block.parts.FluidPart
 import com.brewingcoder.oc2.block.parts.InventoryPart
@@ -64,4 +65,10 @@ object ModItems {
         PartItem(BlockPart.TYPE, Item.Properties())
     }
     val BLOCK_PART: PartItem by BLOCK_PART_HOLDER
+
+    /** Bridge part — surfaces the adjacent BE's mod-specific scripting API. */
+    val BRIDGE_PART_HOLDER: DeferredItem<PartItem> = REGISTRY.register("bridge_part") { ->
+        PartItem(BridgePart.TYPE, Item.Properties())
+    }
+    val BRIDGE_PART: PartItem by BRIDGE_PART_HOLDER
 }

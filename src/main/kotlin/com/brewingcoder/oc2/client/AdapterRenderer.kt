@@ -364,6 +364,7 @@ class AdapterRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         "fluid"     -> Triple( 60, 100, 200)  // water blue
         "energy"    -> Triple(240, 200, 40)   // FE yellow
         "block"     -> Triple(120, 120, 120)  // cobblestone grey
+        "bridge"    -> Triple(180,  60, 200)  // protocol-bridge purple
         else        -> Triple(160, 160, 160)  // unknown grey
     }
 
