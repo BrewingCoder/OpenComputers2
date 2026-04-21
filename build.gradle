@@ -57,20 +57,22 @@ neoForge {
             // Please read: https://stackoverflow.com/questions/2031163/when-to-use-the-different-log-levels
             logLevel = org.slf4j.event.Level.DEBUG
 
-            // Make Cobalt + Rhino visible to the dev-mode classloader. In production the
-            // jarJar declarations handle this; in dev the FML transforming classloader needs
-            // an explicit nudge. Uses the per-run `additionalRuntimeClasspathConfiguration`
-            // exposed by moddev's RunModel.
-            additionalRuntimeClasspathConfiguration.dependencies.add(
-                project.dependencies.create('cc.tweaked:cobalt:0.9.5')
-            )
+            // KubeJS's 'rhino' mod uses relocated packages (dev.latvian.mods.rhino), NOT
+            // org.mozilla.javascript. Add the real artifact to the FML legacy classpath so
+            // OC2's class-init can find JavaScriptException and friends.
             additionalRuntimeClasspathConfiguration.dependencies.add(
                 project.dependencies.create('org.mozilla:rhino:1.7.15')
             )
+            // Cobalt is intentionally omitted here — CC:Tweaked bundles its own copy
+            // and putting a second cc.tweaked.cobalt module on the path causes a
+            // ResolutionException. CC:T's bundled Cobalt is used at dev runtime; the
+            // jarJar declaration below keeps Cobalt embedded for standalone (non-CC:T) builds.
         }
 
         client {
             client()
+
+            gameDirectory = project.file('run/client')
 
             // Comma-separated list of namespaces to load gametests from. Empty = all namespaces.
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
@@ -155,11 +157,10 @@ dependencies {
         version { strictly '[0.9.5,0.10)'; prefer '0.9.5' }
     }
 
-    // Rhino — Mozilla's JavaScript engine, MPL-2.0, pure JVM. Same dual declaration
-    // pattern as Cobalt for the same reason.
-    jarJar(implementation('org.mozilla:rhino')) {
-        version { strictly '[1.7.15,1.8)'; prefer '1.7.15' }
-    }
+    // Rhino — provided by the 'rhino' mod (KubeJS dependency). Not jarJar'd to avoid
+    // JPMS package conflicts with other mods that bundle org.mozilla:rhino.
+    compileOnly 'org.mozilla:rhino:1.7.15'
+    testRuntimeOnly 'org.mozilla:rhino:1.7.15'
 
     // Test stack — JUnit5 platform + Kotest assertions (cleaner than vanilla JUnit assertions).
     // See docs/11-engineering-rules.md — Rule A demands tests, Rule B demands testable seams.
@@ -188,6 +189,11 @@ tasks.named('test', Test) {
 // Mods.toml templating — expand ${...} placeholders in src/main/resources/META-INF/neoforge.mods.toml
 // using gradle.properties values. moddev 1.0.11 doesn't have ideSyncTask, so we use the simpler
 // processResources pattern that mods on this NeoForge line have always used.
+// Build ID: base version + timestamp injected at compile time.
+// Format "0.1.20260421.1430" lets Claude query exactly which build is running.
+def buildTimestamp = new Date().format("yyyyMMdd.HHmm")
+def buildId = "${mod_version}.${buildTimestamp}"
+
 tasks.withType(ProcessResources).configureEach {
     var replaceProperties = [
             minecraft_version      : minecraft_version,
@@ -201,9 +207,10 @@ tasks.withType(ProcessResources).configureEach {
             mod_version            : mod_version,
             mod_authors            : mod_authors,
             mod_description        : mod_description,
+            build_id               : buildId,
     ]
     inputs.properties replaceProperties
-    filesMatching(['META-INF/neoforge.mods.toml']) {
+    filesMatching(['META-INF/neoforge.mods.toml', 'META-INF/build.properties']) {
         expand replaceProperties
     }
 }

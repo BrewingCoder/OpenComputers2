@@ -200,7 +200,14 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         com.mojang.blaze3d.systems.RenderSystem.setShaderFogStart(savedFogStart)
     }
 
-    /** Bitmap atlas glyph quads via vanilla `position_tex_color` shader (shader-pack-safe). */
+    /**
+     * Glyph quads via vanilla `position_tex_color` shader (shader-pack-safe).
+     *
+     * Tries the CPU-rasterized MSDF atlas first ([MsdfRasterAtlas], 12×26 cells,
+     * ~3× sharper than the fallback). If that isn't ready yet or generation failed,
+     * falls back to the original 5×8 bitmap atlas. Both use identical UV math
+     * (code → grid cell) so the same loop handles both.
+     */
     private fun renderTextBitmap(
         bufferSource: MultiBufferSource,
         matrix: org.joml.Matrix4f,
@@ -208,12 +215,15 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         rowHeight: Float,
         cellWidth: Float,
     ) {
-        val buf = bufferSource.getBuffer(MsdfShaders.MONITOR_TEXT_BITMAP)
-        val atlasW = MsdfShaders.BITMAP_ATLAS_W
-        val atlasH = MsdfShaders.BITMAP_ATLAS_H
-        val atlasCols = MsdfShaders.BITMAP_ATLAS_COLS
-        val cellPxW = MsdfShaders.BITMAP_CELL_PX_W
-        val cellPxH = MsdfShaders.BITMAP_CELL_PX_H
+        val rasterType = MsdfShaders.getRasterRenderType()
+        val renderType = rasterType ?: MsdfShaders.MONITOR_TEXT_BITMAP
+        val atlasW = if (rasterType != null) MsdfRasterAtlas.ATLAS_W else MsdfShaders.BITMAP_ATLAS_W
+        val atlasH = if (rasterType != null) MsdfRasterAtlas.ATLAS_H else MsdfShaders.BITMAP_ATLAS_H
+        val atlasCols = if (rasterType != null) MsdfRasterAtlas.ATLAS_COLS else MsdfShaders.BITMAP_ATLAS_COLS
+        val cellPxW = if (rasterType != null) MsdfRasterAtlas.CELL_W.toFloat() else MsdfShaders.BITMAP_CELL_PX_W.toFloat()
+        val cellPxH = if (rasterType != null) MsdfRasterAtlas.CELL_H.toFloat() else MsdfShaders.BITMAP_CELL_PX_H.toFloat()
+
+        val buf = bufferSource.getBuffer(renderType)
         for (rowIdx in snap.rows.indices) {
             val line = snap.rows[rowIdx]
             val y0 = rowIdx * rowHeight

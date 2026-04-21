@@ -30,8 +30,17 @@ object OpenComputers2 {
 
     val LOGGER: Logger = LogManager.getLogger(ID)
 
+    /** Build ID injected at compile time — format "modVersion.yyyyMMdd.HHmm". */
+    val BUILD_ID: String = runCatching {
+        OpenComputers2::class.java.getResourceAsStream("/META-INF/build.properties")
+            ?.use { java.util.Properties().also { p -> p.load(it) }.getProperty("build.id") }
+    }.getOrNull() ?: "dev"
+
     init {
-        LOGGER.info("OpenComputers2 booting…")
+        // Expose build ID as a system property so OC2Debug (same JVM, different classloader)
+        // can read it without reflection across classloader boundaries.
+        System.setProperty("oc2.buildId", BUILD_ID)
+        LOGGER.info("OpenComputers2 booting… build=$BUILD_ID")
 
         ModBlocks.REGISTRY.register(MOD_BUS)
         ModBlockEntities.REGISTRY.register(MOD_BUS)
