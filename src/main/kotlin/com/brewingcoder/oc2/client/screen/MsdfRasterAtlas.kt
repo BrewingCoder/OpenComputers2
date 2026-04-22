@@ -76,7 +76,7 @@ object MsdfRasterAtlas {
 
             val outW = (ATLAS_COLS * CELL_W)
             val outH = (ATLAS_COLS * CELL_H)
-            val outImg = NativeImage(NativeImage.Format.RGBA, outW, outH, false)  // false = calloc (zero-initialized)
+            val outImg = NativeImage(NativeImage.Format.RGBA, outW, outH, true)  // useCalloc=true: zero-initialize (transparent background between glyphs)
 
             for (code in 0x20..0xFF) {
                 val g = meta.glyphs[code] ?: continue
@@ -93,6 +93,10 @@ object MsdfRasterAtlas {
                     val emY = meta.ascender - py.toFloat() / pixPerEm
                     // normalized position within glyph's atlas rect (0=bottom edge, 1=top edge)
                     val s = if (pb.top != pb.bottom) (emY - pb.bottom) / (pb.top - pb.bottom) else 0.5f
+                    // Outside [0,1] we'd sample neighboring glyphs in the source atlas — msdfgen
+                    // packs glyphs with only distanceRange/2 padding, already accounted for inside
+                    // atlasBounds. Any sample outside atlasBounds can hit unrelated pixel data.
+                    if (s < 0f || s > 1f) continue
                     // atlas Y in NativeImage coords (NativeImage y=0 at top; MSDF yOrigin=bottom → invert)
                     val atlasY = atlasImg.height - (ab.bottom + s * (ab.top - ab.bottom))
 
@@ -101,6 +105,7 @@ object MsdfRasterAtlas {
                         val emX = px.toFloat() / pixPerEm
                         // normalized position within glyph's atlas rect (0=left, 1=right)
                         val t = if (pb.right != pb.left) (emX - pb.left) / (pb.right - pb.left) else 0.5f
+                        if (t < 0f || t > 1f) continue
                         val atlasX = ab.left + t * (ab.right - ab.left)
 
                         val (r, g2, b) = bilinear(atlasImg, atlasX, atlasY)
@@ -118,6 +123,9 @@ object MsdfRasterAtlas {
 
             val dynTex = DynamicTexture(outImg)
             dynTex.upload()
+            // NEAREST filter: cells are densely packed with no padding, so
+            // GL_LINEAR would bleed neighbor glyphs across cell boundaries.
+            dynTex.setFilter(false, false)
             location = mc.textureManager.register("oc2_msdf_raster", dynTex)
             atlasImg.close()
             OpenComputers2.LOGGER.info("MsdfRasterAtlas: generated ${outW}×${outH} atlas (${CELL_W}×${CELL_H} cells, screenPxRange=${"%.2f".format(screenPxRange)})")
