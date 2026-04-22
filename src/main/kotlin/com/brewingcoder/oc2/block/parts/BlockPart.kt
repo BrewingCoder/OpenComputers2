@@ -62,6 +62,7 @@ class BlockPart : Part {
         private val host: PartHost,
         override val name: String,
     ) : BlockPeripheral {
+        override val location: com.brewingcoder.oc2.platform.Position get() = host.location
         override fun read(): BlockPeripheral.BlockReadout? = host.readAdjacentBlock()
         override fun harvest(target: InventoryPeripheral?): List<InventoryPeripheral.ItemSnapshot> =
             host.harvestAdjacentBlock(target)

@@ -276,6 +276,7 @@ class CobaltLuaHostTest {
     private class FakeMonitor(private val cols: Int = 20, private val rows: Int = 10) :
         com.brewingcoder.oc2.platform.peripheral.MonitorPeripheral {
         val log = mutableListOf<String>()
+        override val location: com.brewingcoder.oc2.platform.Position = com.brewingcoder.oc2.platform.Position.ORIGIN
         override fun write(text: String) { log.add("write($text)") }
         override fun setCursorPos(col: Int, row: Int) { log.add("setCursorPos($col,$row)") }
         override fun clear() { log.add("clear()") }
@@ -301,6 +302,18 @@ class CobaltLuaHostTest {
         val r = host().eval("""print(peripheral.find("monitor") == nil)""", "p.lua", env)
         r.ok shouldBe true
         out.lines shouldBe listOf("true")
+    }
+
+    @Test
+    fun `sleep treats argument as seconds not milliseconds`() {
+        // sleep(0.05) should take ~50 ms. If it were treating the argument as ms it would
+        // take only 0.05 ms (essentially instant). We verify elapsed time >= 40 ms.
+        val out = CapturingOut()
+        val start = System.currentTimeMillis()
+        val r = host().eval("sleep(0.05)", "sleep_test.lua", out)
+        val elapsed = System.currentTimeMillis() - start
+        r.ok shouldBe true
+        (elapsed >= 40) shouldBe true  // at least 40 ms elapsed — not instant
     }
 
     @Test

@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object PeripheralLease {
 
-    data class Holder(val pid: Int, val chunkName: String)
+    data class Holder(val pid: Int, val chunkName: String, val onRelease: (() -> Unit)? = null)
 
     /** key = peripheral instance (identity); value = current holder. */
     private val leases: MutableMap<Any, Holder> = ConcurrentHashMap()
@@ -30,14 +30,17 @@ object PeripheralLease {
      * Throw [PeripheralLockException] if [peripheral] is held by a different
      * script. Otherwise (no lease, or held by us) take/keep the lease and return.
      *
+     * [onRelease] is called once when the lease is dropped (script kill/crash/exit).
+     * Only the first acquisition registers the callback — re-entrant calls are no-ops.
+     *
      * No-op when no script context is active (tests, direct calls).
      */
-    fun acquireOrThrow(peripheral: Any) {
+    fun acquireOrThrow(peripheral: Any, onRelease: (() -> Unit)? = null) {
         val callerPid = ScriptCallerContext.pid() ?: return
         val callerName = ScriptCallerContext.chunkName() ?: "<unknown>"
         val existing = leases[peripheral]
         if (existing == null) {
-            leases[peripheral] = Holder(callerPid, callerName)
+            leases[peripheral] = Holder(callerPid, callerName, onRelease)
             return
         }
         if (existing.pid == callerPid) return  // re-entrant from same script — fine
@@ -46,9 +49,15 @@ object PeripheralLease {
         )
     }
 
-    /** Drop every lease held by [pid]. Called by [ScriptRunHandle] when a script ends. */
+    /** Drop every lease held by [pid], invoking each release callback. Called by [ScriptRunHandle] when a script ends. */
     fun releaseFor(pid: Int) {
-        leases.entries.removeIf { it.value.pid == pid }
+        val released = mutableListOf<() -> Unit>()
+        leases.entries.removeIf { entry ->
+            (entry.value.pid == pid).also { matches ->
+                if (matches) entry.value.onRelease?.let { released += it }
+            }
+        }
+        released.forEach { runCatching { it() } }
     }
 
     /** Test/diagnostic — wipes all leases. */

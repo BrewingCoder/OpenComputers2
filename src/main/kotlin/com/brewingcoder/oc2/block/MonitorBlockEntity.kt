@@ -199,6 +199,18 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
     /**
      * Recompute this monitor's group based on the current world state. Called
      * on placement and whenever a neighbor changes.
+     *
+     * Applies the resulting group state to EVERY cell in the flood-fill
+     * component, not just this seed. Required because MC's `neighborChanged`
+     * only reaches cells adjacent to the changed block — distant cells in the
+     * same monitor wall would otherwise keep stale `groupH`/`masterPos`
+     * state (observed: placing a 4×4 wall left the first-placed row as a
+     * 1×4 standalone master while the rest of the wall claimed to be 4×4 of
+     * the same master — bezel showed 1×4, not 4×4).
+     *
+     * Correctness: flood-fill and max-rect search are deterministic from any
+     * seed in the same connected component, so applying the computed group to
+     * every member is equivalent to each one running its own re-evaluation.
      */
     fun requestGroupReevaluation() {
         if (!isServer) return
@@ -207,14 +219,38 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         val facing = state.getValue(MonitorBlock.FACING).toMergeFacing() ?: return
 
         val seedPos = Position(blockPos.x, blockPos.y, blockPos.z)
-        val group = MonitorMerge.computeGroup(seedPos, facing) { p ->
+        val result = MonitorMerge.computeComponent(seedPos, facing) { p ->
             val bp = BlockPos(p.x, p.y, p.z)
             val s = lvl.getBlockState(bp)
             s.block === ModBlocks.MONITOR && s.getValue(MonitorBlock.FACING).toMergeFacing() == facing
         }
-        OpenComputers2.LOGGER.debug("monitor reevaluate @ {} → group {}x{} master={}",
-            blockPos, group.width, group.height, group.masterPos)
-        applyGroup(group)
+        OpenComputers2.LOGGER.debug("monitor reevaluate @ {} → group {}x{} master={} ({} members, {} orphans)",
+            blockPos, result.mainGroup.width, result.mainGroup.height, result.mainGroup.masterPos,
+            result.mainGroup.members.size, result.orphans.size)
+
+        // Apply the main group to every rect member so distant cells get their
+        // state corrected in one sweep (instead of waiting for a future
+        // neighborChanged that may never come).
+        for (memberPos in result.mainGroup.members) {
+            val bp = BlockPos(memberPos.x, memberPos.y, memberPos.z)
+            val be = lvl.getBlockEntity(bp) as? MonitorBlockEntity ?: continue
+            be.applyGroup(result.mainGroup)
+        }
+
+        // Orphans: connected to the component but outside the max rect. Each
+        // becomes a standalone 1×1 master pointing at itself.
+        for (orphanPos in result.orphans) {
+            val bp = BlockPos(orphanPos.x, orphanPos.y, orphanPos.z)
+            val be = lvl.getBlockEntity(bp) as? MonitorBlockEntity ?: continue
+            val orphanGroup = MonitorMerge.MonitorGroup(
+                masterPos = orphanPos,
+                facing = facing,
+                members = setOf(orphanPos),
+                width = 1,
+                height = 1,
+            )
+            be.applyGroup(orphanGroup)
+        }
     }
 
     /** Update local group state from a freshly-computed [MonitorMerge.MonitorGroup]. */
@@ -324,7 +360,20 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
     // on the worker), which is null on the server thread. Acquiring after the marshal
     // would silently no-op.
 
-    private fun lease() = com.brewingcoder.oc2.platform.script.PeripheralLease.acquireOrThrow(this)
+    private fun lease() = com.brewingcoder.oc2.platform.script.PeripheralLease.acquireOrThrow(this) {
+        // Script ended — clear text buffer and pixel layer so the monitor doesn't
+        // show stale content from the previous script's run.
+        onServerThread {
+            forMaster { master ->
+                master.buffer?.forEach { row -> row.fill(' ') }
+                master.fgColors?.fill(DEFAULT_FG)
+                master.bgColors?.fill(DEFAULT_BG)
+                master.pixelBuffer = null
+                master.setChanged()
+                master.sync()
+            }
+        }
+    }
 
     override fun write(text: String): Unit { lease(); onServerThread {
         forMaster { it.doWriteText(text) }
@@ -341,8 +390,8 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         forMaster { master ->
             val buf = master.buffer ?: return@forMaster
             for (row in buf) row.fill(' ')
-            master.fgColors?.fill(DEFAULT_FG)
-            master.bgColors?.fill(DEFAULT_BG)
+            master.fgColors?.fill(master.currentFg)
+            master.bgColors?.fill(master.currentBg)
             master.cursorRow = 0
             master.cursorCol = 0
             master.setChanged()
@@ -584,7 +633,9 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
                         if (isPrintable(ch)) {
                             if (cursorCol >= totalCols) newline()
                             val idx = cursorRow * totalCols + cursorCol
+                            OpenComputers2.LOGGER.debug("doWriteText: writing '{}' to buf[{}][{}], bufIdentity={}", ch, cursorRow, cursorCol, System.identityHashCode(buf))
                             buf[cursorRow][cursorCol] = ch
+                            OpenComputers2.LOGGER.debug("doWriteText: buf[{}][{}] is now '{}', bufferIdentity={}", cursorRow, cursorCol, buffer?.get(cursorRow)?.get(cursorCol), System.identityHashCode(buffer))
                             fg[idx] = currentFg
                             bg[idx] = currentBg
                             cursorCol++
@@ -667,8 +718,8 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         val fg = fgColors ?: return false
         val bg = bgColors ?: return false
         for (row in buf) row.fill(' ')
-        fg.fill(DEFAULT_FG)
-        bg.fill(DEFAULT_BG)
+        fg.fill(currentFg)
+        bg.fill(currentBg)
         cursorRow = 0; cursorCol = 0
         return true
     }
@@ -717,7 +768,11 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         tag.putInt(NBT_CUR_FG, currentFg)
         tag.putInt(NBT_CUR_BG, currentBg)
         // Buffer as a single \n-joined string (master only).
-        buffer?.let { tag.putString(NBT_BUFFER, it.joinToString("\n") { row -> String(row) }) }
+        buffer?.let { buf ->
+            val firstRow = if (buf.isNotEmpty()) String(buf[0]).trimEnd() else ""
+            OpenComputers2.LOGGER.debug("saveAdditional @ {} isMaster={}: buf[0]=[{}] bufIdentity={}", blockPos, isMaster, firstRow, System.identityHashCode(buf))
+            tag.putString(NBT_BUFFER, buf.joinToString("\n") { row -> String(row) })
+        }
         fgColors?.let { tag.putIntArray(NBT_FG, it) }
         bgColors?.let { tag.putIntArray(NBT_BG, it) }
         // Pixel buffer — deflate-compressed bytes. Sparse content (mostly 0)
@@ -871,8 +926,8 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
 
         /** VS Dark editor.foreground — matches the GUI terminal's text color. */
         const val DEFAULT_FG = 0xFFD4D4D4.toInt()
-        /** Transparent — no per-cell bg fill, panel texture shows through. */
-        const val DEFAULT_BG = 0x00000000
+        /** Dark terminal background — visible so bg-fill pass can be confirmed at a glance. */
+        const val DEFAULT_BG = 0xFF1A1A2E.toInt()  // deep navy, clearly non-transparent
 
         /**
          * 16-color ANSI palette — xterm/VS Code dark defaults. Indexed 0..15:

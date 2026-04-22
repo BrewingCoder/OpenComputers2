@@ -1,5 +1,6 @@
 package com.brewingcoder.oc2.platform.parts
 
+import com.brewingcoder.oc2.platform.Position
 import com.brewingcoder.oc2.platform.peripheral.Peripheral
 
 /**
@@ -41,9 +42,11 @@ abstract class CapabilityBackedPart<C : Any>(
     override val options: MutableMap<String, String> = mutableMapOf()
 
     private var cachedCapability: C? = null
+    private var cachedLocation: Position = Position.ORIGIN
 
     override fun onAttach(host: PartHost) {
         if (label.isEmpty()) label = host.defaultLabel(typeId)
+        cachedLocation = host.location
         cachedCapability = host.lookupCapability(capabilityKey, accessSide.ifBlank { null })
     }
 
@@ -60,11 +63,11 @@ abstract class CapabilityBackedPart<C : Any>(
 
     final override fun asPeripheral(): Peripheral? {
         val cap = cachedCapability ?: return null
-        return wrapAsPeripheral(cap)
+        return wrapAsPeripheral(cap, cachedLocation)
     }
 
     /** Build the script-facing peripheral around [cap]. Called every time `peripheral.find` runs. */
-    protected abstract fun wrapAsPeripheral(cap: C): Peripheral
+    protected abstract fun wrapAsPeripheral(cap: C, location: Position): Peripheral
 
     override fun saveNbt(out: Part.NbtWriter) {
         out.putString("label", label)

@@ -275,6 +275,8 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
     /** One [PartHost] view per face — caches nothing, cheap to allocate. */
     private fun host(face: Direction): PartHost = object : PartHost {
         override val faceId: String = face.serializedName
+        override val location: com.brewingcoder.oc2.platform.Position
+            get() = com.brewingcoder.oc2.platform.Position(blockPos.x, blockPos.y, blockPos.z)
 
         override fun defaultLabel(typeId: String): String = "${typeId}_${face.serializedName}_${adapterId}"
 

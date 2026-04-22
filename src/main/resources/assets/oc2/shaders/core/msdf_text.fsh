@@ -1,8 +1,15 @@
 #version 150
 
+#moj_import <fog.glsl>
+
 uniform sampler2D Sampler0;
+uniform vec4 ColorModulator;
+uniform float FogStart;
+uniform float FogEnd;
+uniform vec4 FogColor;
 uniform float ScreenPxRange;
 
+in float vertexDistance;
 in vec2 texCoord0;
 in vec4 vertexColor;
 
@@ -26,5 +33,6 @@ void main() {
     float screenPxDistance = ScreenPxRange * (sd - 0.5);
     float opacity = clamp(screenPxDistance + 0.5, 0.0, 1.0);
     if (opacity == 0.0) discard;
-    fragColor = vec4(vertexColor.rgb, vertexColor.a * opacity);
+    vec4 color = vec4(vertexColor.rgb, vertexColor.a * opacity) * ColorModulator;
+    fragColor = linear_fog(color, vertexDistance, FogStart, FogEnd, FogColor);
 }

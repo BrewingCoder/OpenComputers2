@@ -55,6 +55,26 @@ class EventQueueTest {
         received?.args shouldBe listOf(42)
     }
 
+    /** CC:T strips OsLib from Cobalt — we re-add time/clock/epoch so counter scripts work. */
+    @Test
+    fun `os time clock and epoch are callable and return sane numbers`() {
+        val out = CapturingOut()
+        val r = CobaltLuaHost().eval("""
+            local c = os.clock()
+            local t = os.time()
+            local e = os.epoch("utc")
+            assert(type(c) == "number", "clock not number")
+            assert(c >= 0, "clock negative")
+            assert(type(t) == "number", "time not number")
+            assert(t > 1700000000, "time too small") -- sanity: after 2023
+            assert(type(e) == "number", "epoch not number")
+            assert(e > (t * 1000) - 2000 and e < (t * 1000) + 2000, "epoch/time mismatch")
+            print("ok")
+        """.trimIndent(), "os_time.lua", FakeEnv(InMemoryMount(4096), "", out))
+        r.ok shouldBe true
+        out.lines shouldBe listOf("ok")
+    }
+
     /** End-to-end: Lua os.queueEvent → os.pullEvent round-trip. */
     @Test
     fun `lua os queueEvent and pullEvent round-trip`() {

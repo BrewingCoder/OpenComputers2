@@ -24,6 +24,7 @@ class InventoryBindingTest {
 
     /** Tiny in-memory inventory: list of (id, count) backed by mutable list of stacks. */
     private class FakeInv(override val name: String, slots: Int) : InventoryPeripheral {
+        override val location: com.brewingcoder.oc2.platform.Position = com.brewingcoder.oc2.platform.Position.ORIGIN
         private val stacks: MutableList<ItemSnapshot?> = MutableList(slots) { null }
         fun setSlot(slot: Int, snap: ItemSnapshot?) { stacks[slot - 1] = snap }
         override fun size(): Int = stacks.size

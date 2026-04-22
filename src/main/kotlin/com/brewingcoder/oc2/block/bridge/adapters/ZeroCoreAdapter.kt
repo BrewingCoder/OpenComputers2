@@ -67,14 +67,14 @@ object ZeroCoreAdapter : ProtocolAdapter {
         return cls.isInstance(be)
     }
 
-    override fun wrap(be: BlockEntity, face: Direction, name: String): BridgePeripheral? {
+    override fun wrap(be: BlockEntity, face: Direction, name: String, location: com.brewingcoder.oc2.platform.Position): BridgePeripheral? {
         val cls = ifaceClass ?: return null
         if (!cls.isInstance(be)) return null
         val getConnector = getConnectorMethod ?: return null
         val connector = getConnector.invoke(be, face) ?: return null
         val getPeripheral = connectorGetPeripheralMethod ?: return null
         val peripheral = getPeripheral.invoke(connector) ?: return null
-        return ZeroCorePeripheral(name, peripheral)
+        return ZeroCorePeripheral(name, peripheral, location)
     }
 
     private fun tryLoad(fqn: String): Class<*>? = try {
@@ -87,6 +87,7 @@ object ZeroCoreAdapter : ProtocolAdapter {
     private class ZeroCorePeripheral(
         override val name: String,
         private val backing: Any,
+        override val location: com.brewingcoder.oc2.platform.Position,
     ) : BridgePeripheral {
         override val protocol: String = "zerocore"
         override val target: String = backing.javaClass.name

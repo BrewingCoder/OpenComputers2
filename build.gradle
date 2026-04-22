@@ -10,6 +10,15 @@ plugins {
     id 'org.jetbrains.kotlin.jvm' version '2.3.0'
     // OPTIONAL Kotlin Serialization plugin
     //id 'org.jetbrains.kotlin.plugin.serialization' version '2.3.0'
+
+    // Shadow — relocates Rhino (org.mozilla.javascript) into our own namespace
+    // (com.brewingcoder.oc2.shaded.mozilla.javascript) and bundles it into the
+    // mod jar. Required because: (a) KubeJS's `rhino` mod ships under
+    // dev.latvian.mods.rhino, not org.mozilla.javascript, so depending on it at
+    // runtime gave NoClassDefFoundError on JavaScriptException in DW20; (b) two
+    // mods each providing the same org.mozilla.javascript.* classes would cause
+    // a JPMS split-package conflict. Relocation sidesteps both.
+    id 'com.gradleup.shadow' version '8.3.5'
 }
 
 tasks.named('wrapper', Wrapper).configure {
@@ -80,6 +89,10 @@ neoForge {
             // Force window size — dev launcher otherwise defaults to a tiny window.
             // options.txt overrideWidth/Height isn't honored when MC is launched with these args.
             programArguments.addAll '--width', '1900', '--height', '1280'
+
+            // Auto-load the W3 test world so dev iterations skip the title screen.
+            // Comment out to launch into the title screen instead.
+            programArguments.addAll '--quickPlaySingleplayer', 'W3'
         }
 
         server {
@@ -124,6 +137,14 @@ sourceSets.main.resources { srcDir 'src/generated/resources' }
 // "optional", meaning it will not be pulled by dependents of this mod.
 configurations {
     runtimeClasspath.extendsFrom localRuntime
+
+    // `shade` is consumed only by shadowJar. Intentionally NOT extended into
+    // implementation/runtimeClasspath — if our (bundled-but-unrelocated-in-dev)
+    // Cobalt ended up on the dev runtime path it would collide with CC:T's
+    // jarinjar'd cobalt-0.9.5.jar. Compile visibility is handled separately via
+    // `compileOnly`; dev runtime pulls Cobalt from CC:T and Rhino from
+    // additionalRuntimeClasspathConfiguration below.
+    shade
 }
 
 repositories {
@@ -147,18 +168,31 @@ dependencies {
     // Must use the '-neoforge' version on NeoForge. If on regular Forge, omit the '-neoforge'
     implementation 'thedarkcolour:kotlinforforge-neoforge:5.11.0'
 
-    // Cobalt — Lua 5.2 VM, MIT, pure JVM. CC:Tweaked's fork is the actively-maintained line
-    // (the org.squiddev one stopped at 0.7.4 in 2020). Two declarations needed:
-    //   1. jarJar(...) embeds it in the production mod jar (NeoForge extracts at runtime)
-    //   2. additionalRuntimeClasspath puts it on the FML transforming classloader for dev
-    //      runs (jarJar isn't extracted in `runClient` because the dev launch uses source
-    //      classes, not the assembled jar)
-    jarJar(implementation('cc.tweaked:cobalt')) {
-        version { strictly '[0.9.5,0.10)'; prefer '0.9.5' }
+    // Cobalt — Lua 5.2 VM, MIT, pure JVM. CC:Tweaked's fork. In production we ship it
+    // RELOCATED to com.brewingcoder.oc2.shaded.squiddev.cobalt.* because CC:T jarinjar-
+    // bundles its own cobalt-0.9.5.jar (module `cc.tweaked.cobalt`), and JPMS rejects
+    // two modules exporting the same package (ResolutionException: Modules oc2 and
+    // cc.tweaked.cobalt export org.squiddev.cobalt.compiler). Our Lua runtime is
+    // independent of CC:T's, so owning our own relocated copy is the cleanest fix.
+    //   - `shade` → shadowJar bundles + relocates into the production jar
+    //   - `compileOnly` → source code sees org.squiddev.cobalt.* at compile time; in
+    //     dev runs Cobalt is provided by CC:T's jarinjar on the FML module path
+    //   - `testRuntimeOnly` → tests run outside MC, need Cobalt explicitly
+    shade('cc.tweaked:cobalt') {
+        version { strictly '[0.9.5,0.10)'; prefer '0.9.6' }
+    }
+    compileOnly('cc.tweaked:cobalt') {
+        version { strictly '[0.9.5,0.10)'; prefer '0.9.6' }
+    }
+    testRuntimeOnly('cc.tweaked:cobalt') {
+        version { strictly '[0.9.5,0.10)'; prefer '0.9.6' }
     }
 
-    // Rhino — provided by the 'rhino' mod (KubeJS dependency). Not jarJar'd to avoid
-    // JPMS package conflicts with other mods that bundle org.mozilla:rhino.
+    // Rhino — shaded AND relocated into com.brewingcoder.oc2.shaded.mozilla.javascript.*
+    // so we don't clash with KubeJS's `rhino` mod (which ships under dev.latvian.mods.rhino
+    // but would still conflict at the JPMS module layer if two mods both exposed
+    // org.mozilla.javascript). Dev runs get Rhino via additionalRuntimeClasspath above.
+    shade 'org.mozilla:rhino:1.7.15'
     compileOnly 'org.mozilla:rhino:1.7.15'
     testRuntimeOnly 'org.mozilla:rhino:1.7.15'
 
@@ -240,3 +274,35 @@ idea {
         downloadJavadoc = true
     }
 }
+
+// --- shadow: relocate + bundle Rhino and Cobalt into the mod jar ----------
+//
+// Composition of the final mod jar:
+//   - our project classes + resources (from main sourceSet, default shadow behavior)
+//   - Cobalt bundled inline (org.squiddev.cobalt.*, no relocation)
+//   - Rhino bundled + relocated to com.brewingcoder.oc2.shaded.mozilla.javascript.*
+// The main `jar` task still runs and produces a classifier-swapped `-slim` jar
+// that we don't ship; shadowJar is the distribution artifact at `-0.0.1.jar`.
+// No jarJar/META-INF/jarjar/ machinery — shadow is self-contained.
+tasks.named('jar').configure {
+    archiveClassifier = 'slim'
+}
+
+tasks.shadowJar {
+    archiveClassifier = ''
+
+    configurations = [project.configurations.shade]
+
+    relocate 'org.mozilla.javascript', 'com.brewingcoder.oc2.shaded.mozilla.javascript'
+    relocate 'org.mozilla.classfile',  'com.brewingcoder.oc2.shaded.mozilla.classfile'
+    relocate 'org.squiddev.cobalt',    'com.brewingcoder.oc2.shaded.squiddev.cobalt'
+
+    mergeServiceFiles()
+
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+}
+
+tasks.named('assemble').configure { dependsOn tasks.shadowJar }
+tasks.named('build').configure { dependsOn tasks.shadowJar }

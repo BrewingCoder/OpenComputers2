@@ -282,6 +282,7 @@ class RhinoJSHostTest {
     private class FakeMonitor(private val cols: Int = 20, private val rows: Int = 10) :
         com.brewingcoder.oc2.platform.peripheral.MonitorPeripheral {
         val log = mutableListOf<String>()
+        override val location: com.brewingcoder.oc2.platform.Position = com.brewingcoder.oc2.platform.Position.ORIGIN
         override fun write(text: String) { log.add("write($text)") }
         override fun setCursorPos(col: Int, row: Int) { log.add("setCursorPos($col,$row)") }
         override fun clear() { log.add("clear()") }
@@ -307,6 +308,16 @@ class RhinoJSHostTest {
         val r = host().eval("""print(peripheral.find("monitor") == null);""", "p.js", env)
         r.ok shouldBe true
         out.lines shouldBe listOf("true")
+    }
+
+    @Test
+    fun `sleep treats argument as seconds not milliseconds`() {
+        val out = CapturingOut()
+        val start = System.currentTimeMillis()
+        val r = host().eval("sleep(0.05);", "sleep_test.js", out)
+        val elapsed = System.currentTimeMillis() - start
+        r.ok shouldBe true
+        (elapsed >= 40) shouldBe true
     }
 
     @Test

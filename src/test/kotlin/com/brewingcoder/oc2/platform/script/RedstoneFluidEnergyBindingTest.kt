@@ -21,6 +21,7 @@ class RedstoneFluidEnergyBindingTest {
     }
 
     private class FakeRedstone(override val name: String, val inputLevel: Int = 0) : RedstonePeripheral {
+        override val location: com.brewingcoder.oc2.platform.Position = com.brewingcoder.oc2.platform.Position.ORIGIN
         var outputLevel: Int = 0
         override fun getInput(): Int = inputLevel
         override fun getOutput(): Int = outputLevel
@@ -28,6 +29,7 @@ class RedstoneFluidEnergyBindingTest {
     }
 
     private class FakeFluid(override val name: String, capacity: Int) : FluidPeripheral {
+        override val location: com.brewingcoder.oc2.platform.Position = com.brewingcoder.oc2.platform.Position.ORIGIN
         private val buf: MutableList<FluidSnapshot?> = mutableListOf(null)
         private val cap = capacity
         fun set(snap: FluidSnapshot?) { buf[0] = snap }
@@ -51,6 +53,7 @@ class RedstoneFluidEnergyBindingTest {
     }
 
     private class FakeEnergy(override val name: String, var current: Int, val max: Int) : EnergyPeripheral {
+        override val location: com.brewingcoder.oc2.platform.Position = com.brewingcoder.oc2.platform.Position.ORIGIN
         override fun stored(): Int = current
         override fun capacity(): Int = max
         override fun pull(source: EnergyPeripheral, amount: Int): Int {

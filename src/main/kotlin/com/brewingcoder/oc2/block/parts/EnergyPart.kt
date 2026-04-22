@@ -13,11 +13,12 @@ import net.neoforged.neoforge.energy.IEnergyStorage
  */
 class EnergyPart : CapabilityBackedPart<IEnergyStorage>(TYPE_ID, PartCapabilityKeys.ENERGY) {
 
-    override fun wrapAsPeripheral(cap: IEnergyStorage): Peripheral = Wrapper(cap, label)
+    override fun wrapAsPeripheral(cap: IEnergyStorage, location: com.brewingcoder.oc2.platform.Position): Peripheral = Wrapper(cap, label, location)
 
     private class Wrapper(
         private val storage: IEnergyStorage,
         override val name: String,
+        override val location: com.brewingcoder.oc2.platform.Position,
     ) : EnergyPeripheral {
         override fun stored(): Int = storage.energyStored
         override fun capacity(): Int = storage.maxEnergyStored

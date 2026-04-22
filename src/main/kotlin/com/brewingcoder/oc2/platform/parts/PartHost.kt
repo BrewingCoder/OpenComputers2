@@ -16,6 +16,9 @@ interface PartHost {
     /** The face this part sits on (north/south/east/west/up/down — string id). */
     val faceId: String
 
+    /** World block position of the adapter hosting this part. */
+    val location: com.brewingcoder.oc2.platform.Position
+
     /** Auto-generated address — `<kind>_<face>_<hostId>`. Used as the default label. */
     fun defaultLabel(typeId: String): String
 

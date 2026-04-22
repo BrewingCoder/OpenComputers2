@@ -1,5 +1,7 @@
 package com.brewingcoder.oc2.platform.peripheral
 
+import com.brewingcoder.oc2.platform.Position
+
 /**
  * Marker interface for any device a script can call methods on. Each subtype
  * defines its own method surface (see [MonitorPeripheral]). The script-side
@@ -13,6 +15,9 @@ package com.brewingcoder.oc2.platform.peripheral
 interface Peripheral {
     /** Stable kind identifier — `"monitor"`, `"printer"`, etc. */
     val kind: String
+
+    /** World block position of this peripheral. Exposed to scripts as `getLocation()`. */
+    val location: Position
 }
 
 /**

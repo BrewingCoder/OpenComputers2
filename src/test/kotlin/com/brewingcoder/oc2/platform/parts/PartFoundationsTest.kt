@@ -19,6 +19,7 @@ class PartFoundationsTest {
     private class FakeCap(val name: String)
     private class FakePeripheral(val backing: FakeCap) : Peripheral {
         override val kind: String = "fake"
+        override val location: com.brewingcoder.oc2.platform.Position = com.brewingcoder.oc2.platform.Position.ORIGIN
     }
     private class FakePart(key: CapabilityKey<FakeCap>) : CapabilityBackedPart<FakeCap>("fake", key) {
         var attaches: Int = 0
@@ -27,13 +28,14 @@ class PartFoundationsTest {
         override fun onAttach(host: PartHost) { attaches++; super.onAttach(host) }
         override fun onNeighborChanged(host: PartHost) { neighborChanges++; super.onNeighborChanged(host) }
         override fun onDetach() { detaches++; super.onDetach() }
-        override fun wrapAsPeripheral(cap: FakeCap): Peripheral = FakePeripheral(cap)
+        override fun wrapAsPeripheral(cap: FakeCap, location: com.brewingcoder.oc2.platform.Position): Peripheral = FakePeripheral(cap)
     }
 
     private class FakeHost(
         override val faceId: String,
         private val capLookup: (CapabilityKey<*>) -> Any?,
     ) : PartHost {
+        override val location: com.brewingcoder.oc2.platform.Position = com.brewingcoder.oc2.platform.Position.ORIGIN
         override fun defaultLabel(typeId: String): String = "${typeId}_${faceId}"
         @Suppress("UNCHECKED_CAST")
         override fun <C : Any> lookupCapability(key: CapabilityKey<C>, sideOverride: String?): C? = capLookup(key) as? C

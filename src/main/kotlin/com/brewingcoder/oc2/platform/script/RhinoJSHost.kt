@@ -56,7 +56,8 @@ class RhinoJSHost : ScriptHost {
             ScriptableObject.putProperty(scope, "network", makeNetworkObject(env, scope))
             ScriptableObject.putProperty(scope, "sleep", object : BaseFunction(scope, ScriptableObject.getFunctionPrototype(scope)) {
                 override fun call(cx2: Context, scope2: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any {
-                    val ms = (args.getOrNull(0) as? Number)?.toLong()?.coerceIn(0L, 60_000L) ?: 0L
+                    val secs = (args.getOrNull(0) as? Number)?.toDouble() ?: 0.0
+                    val ms = (secs * 1000).toLong().coerceIn(0L, 60_000L)
                     if (ms > 0) Thread.sleep(ms)
                     return Undefined.instance
                 }
@@ -115,15 +116,27 @@ class RhinoJSHost : ScriptHost {
         return obj
     }
 
-    private fun wrapAnyPeripheral(p: com.brewingcoder.oc2.platform.peripheral.Peripheral, parent: Scriptable): Any? = when (p) {
-        is MonitorPeripheral -> wrapMonitor(p, parent)
-        is InventoryPeripheral -> wrapInventory(p, parent)
-        is RedstonePeripheral -> wrapRedstone(p, parent)
-        is FluidPeripheral -> wrapFluid(p, parent)
-        is EnergyPeripheral -> wrapEnergy(p, parent)
-        is BlockPeripheral -> wrapBlock(p, parent)
-        is BridgePeripheral -> wrapBridge(p, parent)
-        else -> null
+    private fun wrapAnyPeripheral(p: com.brewingcoder.oc2.platform.peripheral.Peripheral, parent: Scriptable): Any? {
+        val obj = when (p) {
+            is MonitorPeripheral -> wrapMonitor(p, parent)
+            is InventoryPeripheral -> wrapInventory(p, parent)
+            is RedstonePeripheral -> wrapRedstone(p, parent)
+            is FluidPeripheral -> wrapFluid(p, parent)
+            is EnergyPeripheral -> wrapEnergy(p, parent)
+            is BlockPeripheral -> wrapBlock(p, parent)
+            is BridgePeripheral -> wrapBridge(p, parent)
+            else -> return null
+        }
+        // Stamp getLocation() onto every peripheral object — returns {x, y, z}.
+        defineFsMethod(obj, "getLocation", parent, 0) { _ ->
+            val loc = p.location
+            val result = NativeObject()
+            ScriptableObject.putProperty(result, "x", loc.x)
+            ScriptableObject.putProperty(result, "y", loc.y)
+            ScriptableObject.putProperty(result, "z", loc.z)
+            result
+        }
+        return obj
     }
 
     /** JS counterpart to [CobaltLuaHost.wrapBridge]. */

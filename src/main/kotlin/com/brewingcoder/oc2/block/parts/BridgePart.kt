@@ -49,8 +49,8 @@ class BridgePart : Part {
         val be = h.adjacentBlockEntity() as? BlockEntity
         // Resolve face from PartHost.faceId — kept as a string in platform layer.
         val face = Direction.byName(h.faceId) ?: return null
-        return BridgeDispatcher.discover(be, face, label)
-            ?: NonePeripheral(label, beTarget(be))
+        return BridgeDispatcher.discover(be, face, label, h.location)
+            ?: NonePeripheral(label, beTarget(be), h.location)
     }
 
     /** Diagnostic identifier for the [NonePeripheral] target field — surfaces the BE class name so developers can see what protocol they need to add an adapter for. */
@@ -74,7 +74,7 @@ class BridgePart : Part {
     }
 
     /** Stub returned when no adapter claims the adjacent BE. Lets scripts probe without nil. */
-    private class NonePeripheral(override val name: String, override val target: String) : BridgePeripheral {
+    private class NonePeripheral(override val name: String, override val target: String, override val location: com.brewingcoder.oc2.platform.Position) : BridgePeripheral {
         override val protocol: String = "none"
         override fun methods(): List<String> = emptyList()
         override fun call(method: String, args: List<Any?>): Any? = null

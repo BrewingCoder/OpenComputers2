@@ -1,6 +1,7 @@
 package com.brewingcoder.oc2.block.bridge
 
 import com.brewingcoder.oc2.OpenComputers2
+import com.brewingcoder.oc2.platform.Position
 import com.brewingcoder.oc2.platform.peripheral.BridgePeripheral
 import net.minecraft.core.Direction
 import net.minecraft.world.level.block.entity.BlockEntity
@@ -36,10 +37,10 @@ object BridgeDispatcher {
     /** Resolved adapters, computed lazily on first dispatch. */
     private val adapters: List<ProtocolAdapter> by lazy { loadAdapters() }
 
-    fun discover(be: BlockEntity?, face: Direction, name: String): BridgePeripheral? {
+    fun discover(be: BlockEntity?, face: Direction, name: String, location: Position): BridgePeripheral? {
         if (be == null) return null
         for (adapter in adapters) {
-            if (adapter.canHandle(be, face)) return adapter.wrap(be, face, name)
+            if (adapter.canHandle(be, face)) return adapter.wrap(be, face, name, location)
         }
         // Quiet by default — peripheral.find can run every tick. Devs use BridgePart's
         // NonePeripheral.target to see what BE is adjacent without log spam.

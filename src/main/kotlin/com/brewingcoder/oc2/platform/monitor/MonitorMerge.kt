@@ -44,6 +44,64 @@ object MonitorMerge {
     enum class Facing { NORTH, SOUTH, EAST, WEST }
 
     /**
+     * Result describing the entire flood-fill component: the max-rect group
+     * AND the cells that are connected but fall outside the rect (orphans).
+     *
+     * Callers need both because every cell in a connected component must have
+     * its group state corrected in one pass — direct `neighborChanged` only
+     * reaches the cell adjacent to the change, which would leave distant cells
+     * with stale `groupH` / `masterPos` state (observed: FTB DW20 placement of
+     * a 4×4 wall produced a 1×4 bezel + orphan 1×1 master).
+     */
+    data class ComponentResult(
+        val mainGroup: MonitorGroup,
+        val orphans: Set<Position>,
+    )
+
+    /**
+     * Compute the full flood-fill component around [seed], returning the main
+     * rect group plus orphan cells (in the component but outside the rect).
+     * Use this when you need to fix-up every cell of a connected set after a
+     * placement / removal; use [computeGroup] when you only care about the
+     * single seed's group.
+     */
+    fun computeComponent(
+        seed: Position,
+        facing: Facing,
+        isMonitorAt: (Position) -> Boolean,
+    ): ComponentResult {
+        val connected = floodFill(seed, facing, isMonitorAt)
+        val planeCoords = connected.map { worldToPlane(it, facing) }.toSet()
+        val rect = findMaxRectangle(planeCoords)
+        val rectWorld = rect.cells.map { planeToWorld(it, seed, facing) }.toSet()
+        val masterPos = planeToWorld(rect.topLeft, seed, facing)
+        val mainGroup = MonitorGroup(masterPos, facing, rectWorld, rect.width, rect.height)
+        val orphans = connected - rectWorld
+        return ComponentResult(mainGroup, orphans)
+    }
+
+    private fun floodFill(
+        seed: Position,
+        facing: Facing,
+        isMonitorAt: (Position) -> Boolean,
+    ): Set<Position> {
+        val connected = mutableSetOf<Position>()
+        val queue = ArrayDeque<Position>()
+        queue.add(seed)
+        connected.add(seed)
+        while (queue.isNotEmpty()) {
+            val cur = queue.removeFirst()
+            for (n in inPlaneNeighbors(cur, facing)) {
+                if (n !in connected && isMonitorAt(n)) {
+                    connected.add(n)
+                    queue.add(n)
+                }
+            }
+        }
+        return connected
+    }
+
+    /**
      * Compute the rectangular group that the [seed] belongs to. The algorithm
      * finds the largest filled rectangle within the seed's connected component
      * — players intuit this as "carve out the biggest panel possible from
@@ -71,19 +129,7 @@ object MonitorMerge {
         isMonitorAt: (Position) -> Boolean,
     ): MonitorGroup {
         // 1. Flood-fill connected same-facing monitors
-        val connected = mutableSetOf<Position>()
-        val queue = ArrayDeque<Position>()
-        queue.add(seed)
-        connected.add(seed)
-        while (queue.isNotEmpty()) {
-            val cur = queue.removeFirst()
-            for (n in inPlaneNeighbors(cur, facing)) {
-                if (n !in connected && isMonitorAt(n)) {
-                    connected.add(n)
-                    queue.add(n)
-                }
-            }
-        }
+        val connected = floodFill(seed, facing, isMonitorAt)
 
         // 2. Canonical max-area rectangle within the component
         val planeCoords = connected.map { worldToPlane(it, facing) }.toSet()

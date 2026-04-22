@@ -119,33 +119,6 @@ object MsdfShaders {
             .createCompositeState(false),
     )
 
-    /**
-     * Render type for the CPU-rasterized MSDF atlas — vanilla `position_tex_color`
-     * shader with the generated atlas as Sampler0. Created lazily on first call
-     * (after [MsdfRasterAtlas] has generated its texture on the render thread).
-     * Returns null until generation is complete or if generation failed.
-     */
-    private var rasterRenderType: RenderType? = null
-
-    fun getRasterRenderType(): RenderType? {
-        if (rasterRenderType != null) return rasterRenderType
-        val loc = MsdfRasterAtlas.getOrGenerate() ?: return null
-        rasterRenderType = RenderType.create(
-            "oc2_monitor_text_raster",
-            DefaultVertexFormat.POSITION_TEX_COLOR,
-            VertexFormat.Mode.QUADS,
-            256, false, true,
-            RenderType.CompositeState.builder()
-                .setShaderState(RenderStateShard.ShaderStateShard(net.minecraft.client.renderer.GameRenderer::getPositionTexColorShader))
-                .setTextureState(RenderStateShard.TextureStateShard(loc, false, false))
-                .setTransparencyState(RenderStateShard.TRANSLUCENT_TRANSPARENCY)
-                .setWriteMaskState(RenderStateShard.COLOR_WRITE)
-                .setCullState(RenderStateShard.NO_CULL)
-                .createCompositeState(false),
-        )
-        return rasterRenderType
-    }
-
     @SubscribeEvent
     fun onRegisterShaders(event: RegisterShadersEvent) {
         try {

@@ -3,8 +3,10 @@ package com.brewingcoder.oc2.client.screen
 import com.brewingcoder.oc2.OpenComputers2
 import com.mojang.blaze3d.platform.NativeImage
 import com.mojang.blaze3d.systems.RenderSystem
+import net.minecraft.client.Minecraft
 import net.minecraft.client.renderer.texture.DynamicTexture
 import net.minecraft.core.BlockPos
+import net.minecraft.resources.ResourceLocation
 import net.neoforged.api.distmarker.Dist
 import net.neoforged.bus.api.SubscribeEvent
 import net.neoforged.fml.common.EventBusSubscriber
@@ -30,6 +32,7 @@ object MonitorPixelTextureCache {
 
     private class Entry(
         val texture: DynamicTexture,
+        val location: ResourceLocation,
         var pxW: Int,
         var pxH: Int,
         var lastBufferHash: Int,
@@ -38,26 +41,44 @@ object MonitorPixelTextureCache {
     private val entries: MutableMap<BlockPos, Entry> = mutableMapOf()
 
     /**
-     * Get (or allocate/reallocate) the GL texture ID for this master. Uploads
-     * the current buffer if its hash differs from the last uploaded one.
-     * Returns 0 on failure (which the renderer treats as "skip the pixel layer").
+     * Stable per-master texture ID. Path encodes the BlockPos as a hex long so
+     * the same master always maps to the same resource location across frames.
      */
-    fun getOrUpload(masterPos: BlockPos, pxW: Int, pxH: Int, sourceArgb: IntArray): Int {
+    private fun locationFor(pos: BlockPos): ResourceLocation =
+        ResourceLocation.fromNamespaceAndPath(
+            "oc2",
+            "dynamic/monitor_pixels/" + java.lang.Long.toHexString(pos.asLong())
+        )
+
+    /**
+     * Get (or allocate/reallocate) a [ResourceLocation] pointing at this master's
+     * live pixel texture, registered with [net.minecraft.client.renderer.texture.TextureManager]
+     * so it can be sampled via managed render types (e.g. `RenderType.text(rl)`).
+     * Uploads the current buffer if its hash differs from the last uploaded one.
+     * Returns null on failure.
+     */
+    fun getOrUpload(masterPos: BlockPos, pxW: Int, pxH: Int, sourceArgb: IntArray): ResourceLocation? {
         RenderSystem.assertOnRenderThread()
         val existing = entries[masterPos]
         val needRealloc = existing == null || existing.pxW != pxW || existing.pxH != pxH
         val entry = if (needRealloc) {
-            existing?.texture?.close()
+            existing?.let {
+                Minecraft.getInstance().textureManager.release(it.location)
+                it.texture.close()
+            }
             val img = NativeImage(NativeImage.Format.RGBA, pxW, pxH, false)
-            val e = Entry(DynamicTexture(img), pxW, pxH, lastBufferHash = 0)
+            val tex = DynamicTexture(img)
+            val rl = locationFor(masterPos)
+            Minecraft.getInstance().textureManager.register(rl, tex)
+            val e = Entry(tex, rl, pxW, pxH, lastBufferHash = 0)
             entries[masterPos] = e
-            OpenComputers2.LOGGER.debug("MonitorPixelTextureCache: allocate {} at {}×{}", masterPos, pxW, pxH)
+            OpenComputers2.LOGGER.debug("MonitorPixelTextureCache: allocate {} at {}×{} → {}", masterPos, pxW, pxH, rl)
             e
         } else existing!!
 
         val newHash = sourceArgb.contentHashCode()
         if (newHash != entry.lastBufferHash || needRealloc) {
-            val img = entry.texture.pixels ?: return entry.texture.id
+            val img = entry.texture.pixels ?: return entry.location
             // NativeImage.setPixelRGBA despite its name takes ABGR ints (native
             // little-endian byte order when read back as RGBA). Swap R↔B here.
             for (y in 0 until pxH) {
@@ -75,19 +96,26 @@ object MonitorPixelTextureCache {
             entry.texture.upload()
             entry.lastBufferHash = newHash
         }
-        return entry.texture.id
+        return entry.location
     }
 
     fun release(masterPos: BlockPos) {
         RenderSystem.assertOnRenderThread()
-        entries.remove(masterPos)?.texture?.close()
+        entries.remove(masterPos)?.let {
+            Minecraft.getInstance().textureManager.release(it.location)
+            it.texture.close()
+        }
     }
 
     fun releaseAll() {
         RenderSystem.assertOnRenderThread()
         if (entries.isEmpty()) return
         OpenComputers2.LOGGER.debug("MonitorPixelTextureCache: releaseAll ({} entries)", entries.size)
-        for ((_, e) in entries) e.texture.close()
+        val mgr = Minecraft.getInstance().textureManager
+        for ((_, e) in entries) {
+            mgr.release(e.location)
+            e.texture.close()
+        }
         entries.clear()
     }
 

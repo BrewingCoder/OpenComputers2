@@ -23,7 +23,7 @@ import net.neoforged.neoforge.items.IItemHandler
  */
 class InventoryPart : CapabilityBackedPart<IItemHandler>(TYPE_ID, PartCapabilityKeys.ITEM) {
 
-    override fun wrapAsPeripheral(cap: IItemHandler): Peripheral = Wrapper(cap, label)
+    override fun wrapAsPeripheral(cap: IItemHandler, location: com.brewingcoder.oc2.platform.Position): Peripheral = Wrapper(cap, label, location)
 
     /**
      * [InventoryPeripheral] implementation backed by a live IItemHandler.
@@ -34,6 +34,7 @@ class InventoryPart : CapabilityBackedPart<IItemHandler>(TYPE_ID, PartCapability
     internal class Wrapper(
         internal val handler: IItemHandler,
         override val name: String,
+        override val location: com.brewingcoder.oc2.platform.Position,
     ) : InventoryPeripheral {
         override fun size(): Int = handler.slots
 

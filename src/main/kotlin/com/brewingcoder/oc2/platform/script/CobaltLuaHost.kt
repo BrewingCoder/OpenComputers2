@@ -48,7 +48,9 @@ class CobaltLuaHost : ScriptHost {
     override fun eval(source: String, chunkName: String, env: ScriptEnv): ScriptResult {
         val state = LuaState()
         return try {
-            val globals = CoreLibraries.standardGlobals(state)
+            // 0.9.6 changed standardGlobals to void; globals are retrieved via state.globals()
+            CoreLibraries.standardGlobals(state)
+            val globals = state.globals()
             globals.rawset("print", makePrintFunction(env.out))
             globals.rawset("fs", makeFsTable(env.mount, env.cwd))
             globals.rawset("peripheral", makePeripheralTable(env))
@@ -60,7 +62,8 @@ class CobaltLuaHost : ScriptHost {
             // overwriting it.
             installOsEventApi(globals, env)
             globals.rawset("sleep", fn { args ->
-                val ms = args.arg(1).toDouble().toLong().coerceIn(0L, 60_000L)
+                val secs = args.arg(1).toDouble()
+                val ms = (secs * 1000).toLong().coerceIn(0L, 60_000L)
                 if (ms > 0) Thread.sleep(ms)
                 Constants.NIL
             })
@@ -209,15 +212,29 @@ class CobaltLuaHost : ScriptHost {
         return t
     }
 
-    private fun wrapPeripheral(p: com.brewingcoder.oc2.platform.peripheral.Peripheral): LuaValue = when (p) {
-        is MonitorPeripheral -> wrapMonitor(p)
-        is InventoryPeripheral -> wrapInventory(p)
-        is RedstonePeripheral -> wrapRedstone(p)
-        is FluidPeripheral -> wrapFluid(p)
-        is EnergyPeripheral -> wrapEnergy(p)
-        is BlockPeripheral -> wrapBlock(p)
-        is BridgePeripheral -> wrapBridge(p)
-        else -> Constants.NIL
+    private fun wrapPeripheral(p: com.brewingcoder.oc2.platform.peripheral.Peripheral): LuaValue {
+        val t = when (p) {
+            is MonitorPeripheral -> wrapMonitor(p)
+            is InventoryPeripheral -> wrapInventory(p)
+            is RedstonePeripheral -> wrapRedstone(p)
+            is FluidPeripheral -> wrapFluid(p)
+            is EnergyPeripheral -> wrapEnergy(p)
+            is BlockPeripheral -> wrapBlock(p)
+            is BridgePeripheral -> wrapBridge(p)
+            else -> return Constants.NIL
+        }
+        // Stamp getLocation() onto every peripheral table — returns x, y, z as three values.
+        t.rawset("getLocation", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs {
+                val loc = p.location
+                return ValueFactory.varargsOf(
+                    ValueFactory.valueOf(loc.x),
+                    ValueFactory.valueOf(loc.y),
+                    ValueFactory.valueOf(loc.z),
+                )
+            }
+        })
+        return t
     }
 
     /**
@@ -412,9 +429,9 @@ class CobaltLuaHost : ScriptHost {
      * Decode errors (malformed JSON) raise a Lua error so callers can `pcall`.
      */
     /**
-     * Install the CC:T-style `os.*` event API onto the existing `os` table that
-     * Cobalt's CoreLibraries provides. We do NOT replace the table — we merge
-     * three new functions: `pullEvent`, `queueEvent`, `startTimer`.
+     * Install the CC:T-style `os.*` event API onto the `os` table. CC:T's fork of
+     * Cobalt strips Lua's stock `OsLib` entirely, so we also install the clock /
+     * time / epoch primitives scripts reach for when building counters and HUDs.
      *
      * Timer scheduling is local to this script's event queue: the worker thread
      * sleeps until the timer fires (no server-tick coupling needed for Phase 1).
@@ -422,6 +439,29 @@ class CobaltLuaHost : ScriptHost {
     private fun installOsEventApi(globals: LuaTable, env: ScriptEnv) {
         val os = globals.rawget("os") as? LuaTable ?: LuaTable().also { globals.rawset("os", it) }
         val nextTimerId = java.util.concurrent.atomic.AtomicInteger(1)
+        val scriptStartNanos = System.nanoTime()
+
+        // os.clock()  →  seconds since this script started (monotonic, double)
+        os.rawset("clock", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs =
+                ValueFactory.valueOf((System.nanoTime() - scriptStartNanos) / 1_000_000_000.0)
+        })
+
+        // os.time()  →  Unix epoch seconds (double). CC:T returns in-game time by
+        // default; we return wall-clock seconds because (a) we don't have a shared
+        // in-game clock in Phase 1 and (b) wall-clock is what counter/rate code
+        // actually wants. Stable behavior; revisit if we add an in-game clock API.
+        os.rawset("time", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs =
+                ValueFactory.valueOf(System.currentTimeMillis() / 1000.0)
+        })
+
+        // os.epoch([locale])  →  Unix epoch milliseconds. `locale` accepted for
+        // CC:T compat ("utc" / "local" / "ingame") but ignored — always wall-clock ms.
+        os.rawset("epoch", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs =
+                ValueFactory.valueOf(System.currentTimeMillis().toDouble())
+        })
 
         // os.pullEvent([filter])  →  name, args... (blocks indefinitely)
         os.rawset("pullEvent", object : VarArgFunction() {

@@ -80,6 +80,7 @@ class RedstonePart : Part {
         private val invert: Boolean,
         private val outputSetter: (Int) -> Unit,
     ) : RedstonePeripheral {
+        override val location: com.brewingcoder.oc2.platform.Position get() = host.location
         override fun getInput(): Int {
             val raw = host.readRedstoneSignal().coerceIn(0, 15)
             return if (invert) 15 - raw else raw

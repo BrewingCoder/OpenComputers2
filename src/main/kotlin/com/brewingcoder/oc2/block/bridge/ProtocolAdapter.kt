@@ -1,5 +1,6 @@
 package com.brewingcoder.oc2.block.bridge
 
+import com.brewingcoder.oc2.platform.Position
 import com.brewingcoder.oc2.platform.peripheral.BridgePeripheral
 import net.minecraft.core.Direction
 import net.minecraft.world.level.block.entity.BlockEntity
@@ -27,5 +28,5 @@ interface ProtocolAdapter {
      * filter time but the underlying handle vanished by call time (rare —
      * connector lookup race). [name] is the bridge part's label.
      */
-    fun wrap(be: BlockEntity, face: Direction, name: String): BridgePeripheral?
+    fun wrap(be: BlockEntity, face: Direction, name: String, location: Position): BridgePeripheral?
 }
