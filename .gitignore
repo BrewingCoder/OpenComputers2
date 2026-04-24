@@ -32,3 +32,12 @@ repo
 
 # Claude Code local runtime
 .claude/
+
+# local dev scripts (not published)
+scripts/
+
+# stray debug screenshots at repo root
+*.png
+!src/**/*.png
+!run/client/screenshots/
+
