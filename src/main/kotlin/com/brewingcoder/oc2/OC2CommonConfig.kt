@@ -1,5 +1,6 @@
 package com.brewingcoder.oc2
 
+import com.brewingcoder.oc2.block.WiFiExtenderConfig
 import com.brewingcoder.oc2.platform.http.NetworkFetchPolicy
 import net.neoforged.neoforge.common.ModConfigSpec
 
@@ -46,6 +47,27 @@ object OC2CommonConfig {
         )
         .defineInRange("network.fetchTimeoutSeconds", 15, 1, 60)
 
+    val extenderBufferFE: ModConfigSpec.IntValue = BUILDER
+        .comment(
+            "WiFi Extender internal energy buffer, in FE.",
+            "Default: 100000. Range: 1000..10000000.",
+        )
+        .defineInRange("extender.bufferFE", 100_000, 1_000, 10_000_000)
+
+    val extenderIdleDrawFE: ModConfigSpec.IntValue = BUILDER
+        .comment(
+            "FE drained per server tick (20 Hz) while a WiFi Extender is active.",
+            "Default: 20. Range: 0..1000.",
+        )
+        .defineInRange("extender.idleDrawFE", 20, 0, 1_000)
+
+    val extenderRangeBlocks: ModConfigSpec.IntValue = BUILDER
+        .comment(
+            "WiFi Extender broadcast radius in blocks (Euclidean).",
+            "Default: 64. Range: 16..256.",
+        )
+        .defineInRange("extender.rangeBlocks", 64, 16, 256)
+
     val SPEC: ModConfigSpec = BUILDER.build()
 
     /**
@@ -57,5 +79,8 @@ object OC2CommonConfig {
         NetworkFetchPolicy.allowGistFetch = allowGistFetch.get()
         NetworkFetchPolicy.maxFetchBytes = maxFetchBytes.get()
         NetworkFetchPolicy.fetchTimeoutSeconds = fetchTimeoutSeconds.get()
+        WiFiExtenderConfig.bufferFE = extenderBufferFE.get()
+        WiFiExtenderConfig.idleDrawFE = extenderIdleDrawFE.get()
+        WiFiExtenderConfig.rangeBlocks = extenderRangeBlocks.get()
     }
 }

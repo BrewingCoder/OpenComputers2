@@ -51,6 +51,12 @@ object OC2Payloads {
             SetMonitorChannelPayload.Companion::handle,
         )
 
+        registrar.playToServer(
+            SetWiFiExtenderChannelPayload.TYPE,
+            SetWiFiExtenderChannelPayload.STREAM_CODEC,
+            SetWiFiExtenderChannelPayload.Companion::handle,
+        )
+
         registrar.playToClient(
             TerminalOutputPayload.TYPE,
             TerminalOutputPayload.STREAM_CODEC,

@@ -3,6 +3,7 @@
   "block.oc2.computer": "Computer",
   "block.oc2.monitor": "Monitor",
   "block.oc2.adapter": "Adapter",
+  "block.oc2.wifi_extender": "WiFi Extender",
   "item.oc2.inventory_part": "Inventory Part",
   "item.oc2.redstone_part": "Redstone Part",
   "item.oc2.fluid_part": "Fluid Part",
@@ -12,6 +13,7 @@
 
   "screen.oc2.computer": "Computer",
   "screen.oc2.monitor_config": "Monitor Settings",
+  "screen.oc2.wifi_extender_config": "WiFi Extender Settings",
   "screen.oc2.part_config": "Part Settings",
   "screen.oc2.computer.power": "Power",
   "screen.oc2.computer.reset": "Reset",

@@ -35,4 +35,10 @@ object ModBlockEntities {
             .of(::AdapterBlockEntity, ModBlocks.ADAPTER)
             .build(null)
     }
+
+    val WIFI_EXTENDER = REGISTRY.register("wifi_extender") { ->
+        BlockEntityType.Builder
+            .of(::WiFiExtenderBlockEntity, ModBlocks.WIFI_EXTENDER)
+            .build(null)
+    }
 }

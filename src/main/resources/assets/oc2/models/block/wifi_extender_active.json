@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "oc2:block/adapter_core",
+    "north":    "oc2:block/computer_front",
+    "south":    "oc2:block/computer_front",
+    "east":     "oc2:block/computer_front",
+    "west":     "oc2:block/computer_front",
+    "up":       "oc2:block/computer_front",
+    "down":     "oc2:block/adapter_core"
+  }
+}

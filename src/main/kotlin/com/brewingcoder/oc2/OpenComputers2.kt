@@ -106,4 +106,18 @@ object OpenComputers2 {
     fun onConfigReload(event: net.neoforged.fml.event.config.ModConfigEvent.Reloading) {
         if (event.config.spec === OC2CommonConfig.SPEC) OC2CommonConfig.push()
     }
+
+    /**
+     * Wire the WiFi Extender's internal FE buffer to NeoForge's block capability
+     * lookup so adjacent cables/adapters can push energy into it. Registered on
+     * the MOD bus because capabilities are a registry-like concern — they need
+     * to be ready before any block state gets queried.
+     */
+    @SubscribeEvent
+    fun onRegisterCapabilities(event: net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent) {
+        event.registerBlockEntity(
+            net.neoforged.neoforge.capabilities.Capabilities.EnergyStorage.BLOCK,
+            ModBlockEntities.WIFI_EXTENDER.get(),
+        ) { be, _ -> be.energyStorage }
+    }
 }

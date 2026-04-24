@@ -3,8 +3,12 @@ package com.brewingcoder.oc2.client
 import com.brewingcoder.oc2.OpenComputers2
 import com.brewingcoder.oc2.block.ComputerBlockEntity
 import com.brewingcoder.oc2.block.MonitorBlockEntity
+import com.brewingcoder.oc2.block.WiFiExtenderBlock
+import com.brewingcoder.oc2.block.WiFiExtenderBlockEntity
+import com.brewingcoder.oc2.block.WiFiExtenderConfig
 import com.brewingcoder.oc2.client.screen.ComputerScreen
 import com.brewingcoder.oc2.client.screen.MonitorConfigScreen
+import com.brewingcoder.oc2.client.screen.WiFiExtenderConfigScreen
 import net.minecraft.client.Minecraft
 import net.minecraft.core.BlockPos
 import net.minecraft.world.level.Level
@@ -32,6 +36,24 @@ object ClientHandler {
             }
         Minecraft.getInstance().setScreen(
             MonitorConfigScreen(pos, be.channelId, be.groupBlocksWide to be.groupBlocksTall)
+        )
+    }
+
+    fun openWiFiExtenderConfigScreen(level: Level, pos: BlockPos) {
+        val be = level.getBlockEntity(pos) as? WiFiExtenderBlockEntity
+            ?: run {
+                OpenComputers2.LOGGER.warn("openWiFiExtenderConfigScreen called on non-Extender @ {}", pos)
+                return
+            }
+        val active = level.getBlockState(pos).getValue(WiFiExtenderBlock.ACTIVE)
+        Minecraft.getInstance().setScreen(
+            WiFiExtenderConfigScreen(
+                pos = pos,
+                initialChannel = be.channelId,
+                initialEnergy = be.energyStorage.energyStored,
+                maxEnergy = WiFiExtenderConfig.bufferFE,
+                initialActive = active,
+            )
         )
     }
 }

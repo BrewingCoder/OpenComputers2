@@ -1,0 +1,6 @@
+{
+  "variants": {
+    "active=false": { "model": "oc2:block/wifi_extender_idle" },
+    "active=true":  { "model": "oc2:block/wifi_extender_active" }
+  }
+}

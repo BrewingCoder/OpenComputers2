@@ -28,6 +28,7 @@ object ModTabs {
                 output.accept(ModItems.COMPUTER)
                 output.accept(ModItems.MONITOR)
                 output.accept(ModItems.ADAPTER)
+                output.accept(ModItems.WIFI_EXTENDER)
                 output.accept(ModItems.INVENTORY_PART)
                 output.accept(ModItems.REDSTONE_PART)
                 output.accept(ModItems.FLUID_PART)
