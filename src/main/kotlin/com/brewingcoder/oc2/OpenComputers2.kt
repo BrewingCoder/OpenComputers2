@@ -65,9 +65,16 @@ object OpenComputers2 {
 
         // Register the client config — backing toml lives at config/oc2-client.toml
         // and players can edit values without rebuilding the mod.
-        ModList.get().getModContainerById(ID).orElseThrow().registerConfig(
+        val modContainer = ModList.get().getModContainerById(ID).orElseThrow()
+        modContainer.registerConfig(
             ModConfig.Type.CLIENT,
             OC2ClientConfig.SPEC,
+        )
+        // Common config — network fetch toggles (pastebin/gist) + tunables. Pushed
+        // into platform.http.NetworkFetchPolicy on load/reload via onConfigEvent.
+        modContainer.registerConfig(
+            ModConfig.Type.COMMON,
+            OC2CommonConfig.SPEC,
         )
 
         runForDist(
@@ -87,5 +94,16 @@ object OpenComputers2 {
     @SubscribeEvent
     fun onCommonSetup(event: FMLCommonSetupEvent) {
         LOGGER.info("OC2 common setup — hello, world.")
+    }
+
+    /** Called on both initial load and `/reload`. Pushes common-config values to the pure-Kotlin policy holder. */
+    @SubscribeEvent
+    fun onConfigLoad(event: net.neoforged.fml.event.config.ModConfigEvent.Loading) {
+        if (event.config.spec === OC2CommonConfig.SPEC) OC2CommonConfig.push()
+    }
+
+    @SubscribeEvent
+    fun onConfigReload(event: net.neoforged.fml.event.config.ModConfigEvent.Reloading) {
+        if (event.config.spec === OC2CommonConfig.SPEC) OC2CommonConfig.push()
     }
 }

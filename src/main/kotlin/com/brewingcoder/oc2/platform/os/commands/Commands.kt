@@ -28,12 +28,16 @@ object DefaultCommands {
         val luaHost: ScriptHost = CobaltLuaHost()
         val jsHost: ScriptHost = RhinoJSHost()
         val hosts = mapOf("lua" to luaHost, "js" to jsHost)
+        // pastebin/gist `run` subcommand delegates to ScriptStarter; it reaches the
+        // hosts map via this shared slot. Written once per build().
+        RunDelegate.sharedHosts = hosts
         val core: List<ShellCommand> = listOf(
             EchoCommand(), PwdCommand(), CdCommand(), LsCommand(),
             MkdirCommand(), RmCommand(), CatCommand(), WriteCommand(),
             ClearCommand(), IdCommand(), DfCommand(),
             RunCommand(hosts), BgCommand(hosts),
             PsCommand(), JobsCommand(), FgCommand(), KillCommand(), TailCommand(),
+            PastebinCommand(), GistCommand(),
         )
         val all = core.toMutableList<ShellCommand>()
         all.add(HelpCommand { all })  // help references the full set
