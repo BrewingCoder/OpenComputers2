@@ -127,6 +127,24 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
      */
     private var pixelBuffer: IntArray? = null
 
+    /**
+     * Item-icon overlay list — composited ABOVE the text grid so icons occlude text
+     * and HD pixels. Master-only, null on slaves. Lifecycle mirrors [pixelBuffer]:
+     * allocated lazily on first [drawItem]; nulled on slave demotion and on
+     * lease-release (so a new script starts with a blank slate).
+     */
+    private var iconOverlays: MutableList<IconOverlay>? = null
+
+    /**
+     * One icon on the overlay layer. [wPx]×[hPx] are edges in pixel-buffer pixels.
+     * [kind] is `"item"` (default) or `"fluid"` — selects registry lookup + renderer branch.
+     * [id] is the namespaced registry id (`"minecraft:redstone"`, `"minecraft:water"`).
+     */
+    data class IconOverlay(val x: Int, val y: Int, val wPx: Int, val hPx: Int, val id: String, val kind: String = "item") {
+        /** Back-compat alias for the pre-fluid IconOverlay.itemId field. */
+        val itemId: String get() = id
+    }
+
     /** Pixel-buffer dimensions. Computed from group size — see [PX_PER_CELL]. */
     private val pxW: Int get() = totalCols * PX_PER_CELL
     private val pxH: Int get() = totalRows * PX_PER_CELL
@@ -324,6 +342,7 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
             fgColors = null
             bgColors = null
             pixelBuffer = null
+            iconOverlays = null
             cursorRow = 0
             cursorCol = 0
         }
@@ -369,6 +388,7 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
                 master.fgColors?.fill(DEFAULT_FG)
                 master.bgColors?.fill(DEFAULT_BG)
                 master.pixelBuffer = null
+                master.iconOverlays = null
                 master.setChanged()
                 master.sync()
             }
@@ -431,7 +451,13 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
 
     override fun clearPixels(argb: Int): Unit { lease(); onServerThread {
         forMaster { master ->
-            val buf = master.pixelBuffer ?: return@forMaster
+            // Allocate if missing. A previous script's lease-release nulls the
+            // buffer, but the client texture can still hold stale pixels until
+            // the next sync — so a fresh script's clearPixels must always
+            // produce a cleared buffer, even when the slate started empty.
+            val targetPx = master.pxW * master.pxH
+            val buf = master.pixelBuffer?.takeIf { it.size == targetPx }
+                ?: IntArray(targetPx).also { master.pixelBuffer = it }
             buf.fill(argb)
             master.setChanged(); master.sync()
         }
@@ -521,6 +547,113 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         }
     } }
 
+    override fun fillEllipse(cx: Int, cy: Int, rx: Int, ry: Int, argb: Int): Unit { lease(); onServerThread {
+        forMaster { master ->
+            val buf = master.pixelBuffer ?: return@forMaster
+            if (rx <= 0 || ry <= 0) return@forMaster
+            val pxW = master.pxW; val pxH = master.pxH
+            val rx2 = (rx.toLong() * rx.toLong())
+            val ry2 = (ry.toLong() * ry.toLong())
+            val denom = rx2 * ry2
+            val y0 = (cy - ry).coerceAtLeast(0); val y1 = (cy + ry).coerceAtMost(pxH - 1)
+            val x0 = (cx - rx).coerceAtLeast(0); val x1 = (cx + rx).coerceAtMost(pxW - 1)
+            for (yy in y0..y1) {
+                val dy = (yy - cy).toLong()
+                val rowBase = yy * pxW
+                val dyTerm = dy * dy * rx2
+                for (xx in x0..x1) {
+                    val dx = (xx - cx).toLong()
+                    if (dx * dx * ry2 + dyTerm <= denom) buf[rowBase + xx] = argb
+                }
+            }
+            master.setChanged(); master.sync()
+        }
+    } }
+
+    override fun drawArc(cx: Int, cy: Int, rx: Int, ry: Int, thickness: Int, startDeg: Int, sweepDeg: Int, argb: Int): Unit { lease(); onServerThread {
+        forMaster { master ->
+            val buf = master.pixelBuffer ?: return@forMaster
+            if (rx <= 0 || ry <= 0 || sweepDeg <= 0) return@forMaster
+            val t = thickness.coerceIn(1, ry)
+            val pxW = master.pxW; val pxH = master.pxH
+            // Normalized inner-radius squared. A pixel is "in the ring" when
+            // (nx^2 + ny^2) is in [innerR2, 1].
+            val innerRadius = (ry - t).toDouble() / ry.toDouble()
+            val innerR2 = innerRadius * innerRadius
+            val start = ((startDeg % 360) + 360) % 360
+            val sweep = sweepDeg.coerceAtMost(360)
+            val y0 = (cy - ry).coerceAtLeast(0); val y1 = (cy + ry).coerceAtMost(pxH - 1)
+            val x0 = (cx - rx).coerceAtLeast(0); val x1 = (cx + rx).coerceAtMost(pxW - 1)
+            val rxD = rx.toDouble(); val ryD = ry.toDouble()
+            for (yy in y0..y1) {
+                val ny = (yy - cy).toDouble() / ryD
+                val ny2 = ny * ny
+                val rowBase = yy * pxW
+                for (xx in x0..x1) {
+                    val nx = (xx - cx).toDouble() / rxD
+                    val d2 = nx * nx + ny2
+                    if (d2 > 1.0 || d2 < innerR2) continue
+                    // Clock angle: 0 = up (ny < 0), clockwise. atan2(nx, -ny) gives
+                    // that directly in the [-π, π] range; normalize to [0, 360).
+                    var deg = Math.toDegrees(kotlin.math.atan2(nx, -ny))
+                    if (deg < 0) deg += 360.0
+                    val delta = ((deg - start) % 360.0 + 360.0) % 360.0
+                    if (delta > sweep) continue
+                    buf[rowBase + xx] = argb
+                }
+            }
+            master.setChanged(); master.sync()
+        }
+    } }
+
+    override fun drawItem(x: Int, y: Int, wPx: Int, hPx: Int, itemId: String): Unit { lease(); onServerThread {
+        forMaster { master ->
+            if (wPx <= 0 || hPx <= 0 || itemId.isEmpty()) return@forMaster
+            // Accept anything that overlaps the monitor — the client renderer
+            // does the final clip. Reject only icons entirely outside the bounds.
+            if (x + wPx <= 0 || y + hPx <= 0) return@forMaster
+            if (x >= master.pxW || y >= master.pxH) return@forMaster
+            val list = master.iconOverlays ?: mutableListOf<IconOverlay>().also { master.iconOverlays = it }
+            list.add(IconOverlay(x, y, wPx, hPx, itemId, "item"))
+            master.setChanged(); master.sync()
+        }
+    } }
+
+    override fun drawFluid(x: Int, y: Int, wPx: Int, hPx: Int, fluidId: String): Unit { lease(); onServerThread {
+        forMaster { master ->
+            if (wPx <= 0 || hPx <= 0 || fluidId.isEmpty()) return@forMaster
+            if (x + wPx <= 0 || y + hPx <= 0) return@forMaster
+            if (x >= master.pxW || y >= master.pxH) return@forMaster
+            val list = master.iconOverlays ?: mutableListOf<IconOverlay>().also { master.iconOverlays = it }
+            list.add(IconOverlay(x, y, wPx, hPx, fluidId, "fluid"))
+            master.setChanged(); master.sync()
+        }
+    } }
+
+    override fun drawChemical(x: Int, y: Int, wPx: Int, hPx: Int, chemicalId: String): Unit { lease(); onServerThread {
+        forMaster { master ->
+            if (wPx <= 0 || hPx <= 0 || chemicalId.isEmpty()) return@forMaster
+            if (x + wPx <= 0 || y + hPx <= 0) return@forMaster
+            if (x >= master.pxW || y >= master.pxH) return@forMaster
+            val list = master.iconOverlays ?: mutableListOf<IconOverlay>().also { master.iconOverlays = it }
+            list.add(IconOverlay(x, y, wPx, hPx, chemicalId, "chemical"))
+            master.setChanged(); master.sync()
+        }
+    } }
+
+    override fun clearIcons(): Unit { lease(); onServerThread {
+        forMaster { master ->
+            if (master.iconOverlays.isNullOrEmpty()) {
+                // Force-sync even on empty-to-empty so a stale client list gets reset
+                // when this is the first call of a render frame after a reload.
+                master.iconOverlays = mutableListOf()
+            } else {
+                master.iconOverlays!!.clear()
+            }
+            master.setChanged(); master.sync()
+        }
+    } }
+
     /** Internal — clipped rectangle fill into the master's pixelBuffer. No setChanged/sync (caller handles). */
     private fun fillRectImpl(x: Int, y: Int, w: Int, h: Int, argb: Int) {
         val buf = pixelBuffer ?: return
@@ -547,6 +680,9 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         val buf = pixelBuffer ?: return null
         return Triple(pxW, pxH, buf.copyOf())
     }
+
+    /** Read-only icon-overlay snapshot for the renderer. Returns an empty list when there's nothing to draw. */
+    fun iconSnapshot(): List<IconOverlay> = iconOverlays?.toList() ?: emptyList()
 
     /**
      * Run [body] on the server thread, blocking the caller until it completes.
@@ -782,6 +918,13 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
             tag.putInt(NBT_PX_W, pxW)
             tag.putInt(NBT_PX_H, pxH)
         }
+        // Icons — always serialize (even empty list) so a cleared slate replicates
+        // to the client. List shape: "x,y,wPx,hPx,id,kind\n...". id can't contain
+        // newlines or commas in practice (registry ids are [a-z0-9_./:]). The trailing
+        // kind field is optional on load for back-compat with pre-fluid saves.
+        iconOverlays?.let { icons ->
+            tag.putString(NBT_ICONS, icons.joinToString("\n") { "${it.x},${it.y},${it.wPx},${it.hPx},${it.id},${it.kind}" })
+        }
     }
 
     override fun loadAdditional(tag: CompoundTag, registries: HolderLookup.Provider) {
@@ -820,6 +963,26 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
             // Drop the saved pixel buffer if dimensions don't match the current
             // group — a resize between save and load. Cheaper than rescaling pixels.
             pixelBuffer = if (decoded != null && decoded.size == expected) decoded else IntArray(expected)
+        } else {
+            // No NBT_PX in the tag means the server nulled the buffer (script
+            // released its lease). Mirror that to the client — otherwise the old
+            // pixel content persists visually after the script ends.
+            pixelBuffer = null
+        }
+        if (tag.contains(NBT_ICONS)) {
+            val raw = tag.getString(NBT_ICONS)
+            iconOverlays = if (raw.isEmpty()) mutableListOf() else raw.split('\n').mapNotNullTo(mutableListOf()) { line ->
+                // Split on last comma first to peel off optional kind, then split the rest into 5.
+                // New format: "x,y,wPx,hPx,id,kind"  (kind is last so id can contain ':' freely)
+                // Old format: "x,y,wPx,hPx,id"      (no kind → default "item")
+                val parts = line.split(',', limit = 6)
+                if (parts.size < 5) null else try {
+                    val kind = if (parts.size >= 6) parts[5] else "item"
+                    IconOverlay(parts[0].toInt(), parts[1].toInt(), parts[2].toInt(), parts[3].toInt(), parts[4], kind)
+                } catch (e: NumberFormatException) { null }
+            }
+        } else {
+            iconOverlays = null
         }
     }
 
@@ -923,6 +1086,7 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         private const val NBT_PX = "px"
         private const val NBT_PX_W = "pxW"
         private const val NBT_PX_H = "pxH"
+        private const val NBT_ICONS = "icons"
 
         /** VS Dark editor.foreground — matches the GUI terminal's text color. */
         const val DEFAULT_FG = 0xFFD4D4D4.toInt()

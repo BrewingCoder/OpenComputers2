@@ -301,7 +301,10 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
         rootMountCache?.let { return it }
         val server = level?.server
             ?: error("rootMount() called off-server (level=$level)")
-        val mount = OC2ServerContext.get(server).storageProvider.rootMountFor(ensureComputerId())
+        val provider = OC2ServerContext.get(server).storageProvider
+        val writable = provider.rootMountFor(ensureComputerId())
+        // Overlay the shared ROM at /rom/ so scripts see library files in-JAR.
+        val mount = com.brewingcoder.oc2.platform.storage.UnionMount(writable, provider.romMount())
         rootMountCache = mount
         return mount
     }

@@ -67,6 +67,7 @@ class CobaltLuaHost : ScriptHost {
                 if (ms > 0) Thread.sleep(ms)
                 Constants.NIL
             })
+            installRequire(globals, state, env)
             val bytes = source.toByteArray(Charsets.UTF_8)
             val chunk = LoadState.load(state, ByteArrayInputStream(bytes), "@$chunkName", globals)
             LuaThread.runMain(state, chunk)
@@ -508,6 +509,71 @@ class CobaltLuaHost : ScriptHost {
         })
     }
 
+    /**
+     * Install a `require(name)` global. Searches `/lib/?.lua` then `/rom/lib/?.lua`
+     * — user files under `/lib/` shadow ROM copies. Loaded modules run in the same
+     * globals as the caller (Lua's stock behavior); the chunk's return value is
+     * cached so subsequent `require("foo")` calls return the same table.
+     *
+     * Per-eval cache: fresh on every script run, matching the LuaState lifecycle.
+     * No circular-require detection — a self-requiring module will stack-overflow.
+     */
+    private fun installRequire(globals: LuaTable, state: LuaState, env: ScriptEnv) {
+        val cache = mutableMapOf<String, LuaValue>()
+        val searchPaths = listOf("lib/%s.lua", "rom/lib/%s.lua")
+
+        globals.rawset("require", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs {
+                val name = args.arg(1).toString()
+                cache[name]?.let { return it }
+
+                val tried = mutableListOf<String>()
+                var source: String? = null
+                for (pattern in searchPaths) {
+                    val path = pattern.format(name)
+                    tried.add("/$path")
+                    try {
+                        if (env.mount.exists(path) && !env.mount.isDirectory(path)) {
+                            source = readMountFile(env.mount, path)
+                            break
+                        }
+                    } catch (_: StorageException) { /* try next */ }
+                }
+                if (source == null) {
+                    throw LuaError("module '$name' not found; searched: ${tried.joinToString(";")}")
+                }
+
+                val chunk = try {
+                    LoadState.load(state, ByteArrayInputStream(source.toByteArray(Charsets.UTF_8)), "@$name", globals)
+                } catch (e: CompileException) {
+                    throw LuaError("compile error in module '$name': ${e.message}")
+                }
+                val result: LuaValue = try {
+                    org.squiddev.cobalt.function.Dispatch.call(state, chunk)
+                } catch (e: LuaError) {
+                    throw LuaError("error loading module '$name': ${e.message}")
+                }
+                // Lua convention: modules that don't return anything still cache as `true`
+                // so `require("foo")` is a no-op second time instead of re-running.
+                val value = if (result.isNil()) Constants.TRUE else result
+                cache[name] = value
+                return value
+            }
+        })
+    }
+
+    private fun readMountFile(mount: com.brewingcoder.oc2.platform.storage.WritableMount, path: String): String {
+        mount.openForRead(path).use { ch ->
+            val size = ch.size().toInt()
+            val buf = java.nio.ByteBuffer.allocate(size)
+            while (buf.hasRemaining()) {
+                val n = ch.read(buf)
+                if (n < 0) break
+            }
+            return String(buf.array(), 0, buf.position(), Charsets.UTF_8)
+        }
+    }
+
     /** Convert a Kotlin event-arg back to a LuaValue. Supports the wire types we accept. */
     private fun toLuaValue(v: Any?): LuaValue = when (v) {
         null -> Constants.NIL
@@ -693,6 +759,141 @@ class CobaltLuaHost : ScriptHost {
                 args.arg(1).toInteger().toInt(),
                 args.arg(2).toInteger().toInt(),
                 args.arg(3).toInteger().toInt(),
+                args.arg(4).toDouble().toLong().toInt(),
+            )
+            Constants.NIL
+        })
+        t.rawset("fillEllipse", method(t) { args ->
+            mon.fillEllipse(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                args.arg(4).toInteger().toInt(),
+                args.arg(5).toDouble().toLong().toInt(),
+            )
+            Constants.NIL
+        })
+        t.rawset("drawArc", method(t) { args ->
+            mon.drawArc(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                args.arg(4).toInteger().toInt(),
+                args.arg(5).toInteger().toInt(),
+                args.arg(6).toInteger().toInt(),
+                args.arg(7).toInteger().toInt(),
+                args.arg(8).toDouble().toLong().toInt(),
+            )
+            Constants.NIL
+        })
+        t.rawset("drawItem", method(t) { args ->
+            mon.drawItem(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                args.arg(4).toInteger().toInt(),
+                args.arg(5).toString(),
+            )
+            Constants.NIL
+        })
+        t.rawset("drawFluid", method(t) { args ->
+            mon.drawFluid(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                args.arg(4).toInteger().toInt(),
+                args.arg(5).toString(),
+            )
+            Constants.NIL
+        })
+        t.rawset("drawChemical", method(t) { args ->
+            mon.drawChemical(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                args.arg(4).toInteger().toInt(),
+                args.arg(5).toString(),
+            )
+            Constants.NIL
+        })
+        t.rawset("clearIcons", method(t) { _ ->
+            mon.clearIcons()
+            Constants.NIL
+        })
+
+        // ---- Engine helpers (cell-geometry, ARGB math, text sugar, small font) ----
+        // Lifted out of ui_v1 libraries so scripts don't each reimplement these.
+        t.rawset("getCellMetrics", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs {
+                val m = mon.getCellMetrics()
+                return ValueFactory.varargsOf(
+                    ValueFactory.valueOf(m.cols),
+                    ValueFactory.valueOf(m.rows),
+                    ValueFactory.valueOf(m.pxPerCol),
+                    ValueFactory.valueOf(m.pxPerRow),
+                )
+            }
+        })
+        t.rawset("snapCellRect", object : VarArgFunction() {
+            override fun invoke(state: LuaState, args: Varargs): Varargs {
+                // Lua calling convention: m:snapCellRect(y, h) -> self is arg 1
+                val offset = if (args.arg(1) === t) 1 else 0
+                val y = args.arg(1 + offset).toInteger().toInt()
+                val h = args.arg(2 + offset).toInteger().toInt()
+                val r = mon.snapCellRect(y, h)
+                return ValueFactory.varargsOf(
+                    ValueFactory.valueOf(r.snappedY),
+                    ValueFactory.valueOf(r.snappedH),
+                    ValueFactory.valueOf(r.textRow),
+                )
+            }
+        })
+        t.rawset("argb", method(t) { args ->
+            ValueFactory.valueOf(mon.argb(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                args.arg(4).toInteger().toInt(),
+            ).toLong().and(0xFFFFFFFFL).toDouble())
+        })
+        t.rawset("lighten", method(t) { args ->
+            ValueFactory.valueOf(mon.lighten(
+                args.arg(1).toDouble().toLong().toInt(),
+                args.arg(2).toInteger().toInt(),
+            ).toLong().and(0xFFFFFFFFL).toDouble())
+        })
+        t.rawset("dim", method(t) { args ->
+            ValueFactory.valueOf(mon.dim(
+                args.arg(1).toDouble().toLong().toInt(),
+            ).toLong().and(0xFFFFFFFFL).toDouble())
+        })
+        t.rawset("drawText", method(t) { args ->
+            mon.drawText(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toString(),
+                args.arg(4).toDouble().toLong().toInt(),
+                args.arg(5).toDouble().toLong().toInt(),
+            )
+            Constants.NIL
+        })
+        t.rawset("fillText", method(t) { args ->
+            val ch = args.arg(4).toString().firstOrNull() ?: ' '
+            mon.fillText(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toInteger().toInt(),
+                ch,
+                args.arg(5).toDouble().toLong().toInt(),
+                args.arg(6).toDouble().toLong().toInt(),
+            )
+            Constants.NIL
+        })
+        t.rawset("drawSmallText", method(t) { args ->
+            mon.drawSmallText(
+                args.arg(1).toInteger().toInt(),
+                args.arg(2).toInteger().toInt(),
+                args.arg(3).toString(),
                 args.arg(4).toDouble().toLong().toInt(),
             )
             Constants.NIL

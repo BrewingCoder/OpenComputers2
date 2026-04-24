@@ -3,7 +3,9 @@ package com.brewingcoder.oc2.block
 import com.mojang.serialization.MapCodec
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
+import net.minecraft.world.entity.player.Player
 import net.minecraft.world.item.context.BlockPlaceContext
+import net.minecraft.world.level.BlockGetter
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.BaseEntityBlock
 import net.minecraft.world.level.block.Block
@@ -52,6 +54,18 @@ class MonitorBlock(properties: Properties) : BaseEntityBlock(properties) {
         MonitorBlockEntity(pos, state)
 
     override fun getRenderShape(state: BlockState): RenderShape = RenderShape.MODEL
+
+    /**
+     * Left-click on the monitor fires touch events (not mining). Returning 0
+     * suppresses the block-break crack overlay that would otherwise build up.
+     * CC:T uses the same trick on its peripheral blocks.
+     */
+    override fun getDestroyProgress(
+        state: BlockState,
+        player: Player,
+        level: BlockGetter,
+        pos: BlockPos,
+    ): Float = 0f
 
     override fun codec(): MapCodec<out BaseEntityBlock> = CODEC
 

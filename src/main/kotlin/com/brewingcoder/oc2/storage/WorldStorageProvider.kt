@@ -1,6 +1,5 @@
 package com.brewingcoder.oc2.storage
 
-import com.brewingcoder.oc2.platform.storage.InMemoryMount
 import com.brewingcoder.oc2.platform.storage.Mount
 import com.brewingcoder.oc2.platform.storage.StorageProvider
 import com.brewingcoder.oc2.platform.storage.WritableMount
@@ -11,9 +10,9 @@ import java.nio.file.Path
  * `<world>/oc2/` in production (set up by [OC2ServerContext]) or a tmp dir in
  * tests.
  *
- * ROM mount is currently an empty in-memory placeholder. We'll swap it for a
- * jar-resource-backed mount when actual ROM contents land (boot scripts,
- * default Lua programs).
+ * ROM is a [ResourceMount] over `assets/oc2/rom/` in the mod jar. Contains boot
+ * scripts, shared libraries (e.g. `ui_v1.lua`), default programs — all mounted
+ * read-only at `/rom/` inside each computer via [com.brewingcoder.oc2.platform.storage.UnionMount].
  */
 class WorldStorageProvider(
     private val root: Path,
@@ -35,13 +34,17 @@ class WorldStorageProvider(
         }
     }
 
-    override fun romMount(): Mount = EMPTY_ROM
+    override fun romMount(): Mount = SHARED_ROM
 
     companion object {
         /** Default per-computer capacity until config lands. Matches CC:T's `computerSpaceLimit` default. */
         const val DEFAULT_CAPACITY_BYTES: Long = 2L * 1024L * 1024L  // 2 MiB
 
-        // Placeholder ROM until we ship boot scripts. Swap for a jar-backed Mount when ready.
-        private val EMPTY_ROM: Mount = InMemoryMount()
+        /**
+         * Shared across every computer — ROM contents don't change at runtime, so a single
+         * classpath scan at mod load is sufficient. If the resource base is absent (tests,
+         * stripped jar), [ResourceMount] still returns a valid empty-root mount.
+         */
+        private val SHARED_ROM: Mount = ResourceMount("assets/oc2/rom")
     }
 }

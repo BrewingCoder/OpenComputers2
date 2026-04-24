@@ -61,6 +61,22 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         val groupW = be.groupBlocksWide
         val groupH = be.groupBlocksTall
 
+        // Skip the entire render if the camera is behind the front face plane.
+        // All three passes call disableCull() (required because the Y-flip in the
+        // pose-stack scale inverts winding order), so without this gate the text,
+        // pixel layer, and cell backgrounds would render visibly through the
+        // back of the block. Cheap half-space test — same pattern CC:T uses.
+        val camera = net.minecraft.client.Minecraft.getInstance().gameRenderer.mainCamera.position
+        val bp = be.blockPos
+        val onFront = when (facing) {
+            Direction.NORTH -> camera.z < bp.z + 0.5   // front face normal = -Z
+            Direction.SOUTH -> camera.z > bp.z + 0.5   // front face normal = +Z
+            Direction.EAST  -> camera.x > bp.x + 0.5   // front face normal = +X
+            Direction.WEST  -> camera.x < bp.x + 0.5   // front face normal = -X
+            else -> true
+        }
+        if (!onFront) return
+
         // Push fog out to extreme distance for our draw — Iris/Oculus deferred
         // composites otherwise apply fog that darkens our text to invisibility.
         // Same trick CC:Tweaked uses. Restore at end.
@@ -230,8 +246,248 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         // substituting our MSDF shader even with no pack active).
         renderTextBitmap(bufferSource, matrix, snap, rowHeight, cellWidth)
 
+        // ---- Pass 3: icon overlay (above text, above pixels) ----
+        // Unified pass — items route through itemRenderer, fluids draw as
+        // textured quads off the block atlas + client-side tint color,
+        // chemicals draw as textured quads off Mekanism's chemical atlas
+        // via the soft-dep bridge.
+        val icons = be.iconSnapshot()
+        if (icons.isNotEmpty()) {
+            val iconPxW = snap.cols * MonitorBlockEntity.PX_PER_CELL
+            val iconPxH = snap.rows.size * MonitorBlockEntity.PX_PER_CELL
+            val fluidIcons = icons.filter { it.kind == "fluid" }
+            if (fluidIcons.isNotEmpty()) {
+                renderFluidIcons(poseStack, fluidIcons, iconPxW, iconPxH, surfaceW, surfaceH)
+            }
+            val chemicalIcons = icons.filter { it.kind == "chemical" }
+            if (chemicalIcons.isNotEmpty()) {
+                renderChemicalIcons(poseStack, chemicalIcons, iconPxW, iconPxH, surfaceW, surfaceH)
+            }
+            val itemIcons = icons.filter { it.kind != "fluid" && it.kind != "chemical" }
+            if (itemIcons.isNotEmpty()) {
+                renderItemIcons(poseStack, bufferSource, packedLight, packedOverlay,
+                    itemIcons, iconPxW, iconPxH, surfaceW, surfaceH)
+            }
+        }
+
         poseStack.popPose()
         com.mojang.blaze3d.systems.RenderSystem.setShaderFogStart(savedFogStart)
+    }
+
+    /**
+     * Draws every pending [MonitorBlockEntity.IconOverlay] as a standard MC item
+     * sprite using `ItemDisplayContext.GUI` (flat inventory-style).
+     *
+     * Icons live ABOVE the text and HD-pixel layers — they occlude anything
+     * below them in the z-order but are themselves subject to whatever comes
+     * afterward in the render stack (nothing in v1).
+     *
+     * Aspect note: ([x], [y], [sizePx]) coordinates are in the master's pixel
+     * buffer grid (which is NOT square — see [MonitorBlockEntity.PX_PER_CELL]
+     * vs character advance). Callers who want a visually-square icon should
+     * reason about `MonitorPeripheral.getPixelSize()` and cell aspect themselves.
+     * ui_v1's `Icon(shape="item")` widget handles this for scripts.
+     */
+    private fun renderItemIcons(
+        poseStack: PoseStack,
+        bufferSource: MultiBufferSource,
+        packedLight: Int,
+        packedOverlay: Int,
+        icons: List<MonitorBlockEntity.IconOverlay>,
+        pxW: Int,
+        pxH: Int,
+        surfaceW: Float,
+        surfaceH: Float,
+    ) {
+        if (pxW <= 0 || pxH <= 0) return
+        val mc = net.minecraft.client.Minecraft.getInstance()
+        val level = mc.level
+        for (icon in icons) {
+            val rl = net.minecraft.resources.ResourceLocation.tryParse(icon.itemId) ?: continue
+            val item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(rl)
+            if (item == net.minecraft.world.item.Items.AIR) continue  // unknown id → AIR fallback
+            val stack = net.minecraft.world.item.ItemStack(item)
+            val emX = (icon.x.toFloat() / pxW) * surfaceW
+            val emY = (icon.y.toFloat() / pxH) * surfaceH
+            val emW = (icon.wPx.toFloat() / pxW) * surfaceW
+            val emH = (icon.hPx.toFloat() / pxH) * surfaceH
+            poseStack.pushPose()
+            // Translate to icon CENTER; GUI context renders items around their origin
+            // in a [-0.5, 0.5] box. Push slightly forward so the item sits ABOVE the
+            // text quads rather than z-fighting.
+            poseStack.translate(emX + emW * 0.5f, emY + emH * 0.5f, ICON_Z_LIFT)
+            // Outer pose has -Y scale (screen-down = +Y local). Items use +Y = up,
+            // so flip Y back here. Z kept uniform with the larger of W/H so 3D
+            // blocks don't look squished when pxW ≠ pxH mapping is asymmetric.
+            val depthScale = kotlin.math.max(emW, emH)
+            poseStack.scale(emW, -emH, depthScale)
+            mc.itemRenderer.renderStatic(
+                stack,
+                net.minecraft.world.item.ItemDisplayContext.GUI,
+                packedLight,
+                packedOverlay,
+                poseStack,
+                bufferSource,
+                level,
+                0,
+            )
+            poseStack.popPose()
+        }
+        // Flush under vanilla BufferSource; no-op under deferred pipelines (Iris
+        // handles its own item batching).
+        (bufferSource as? net.minecraft.client.renderer.MultiBufferSource.BufferSource)?.endBatch()
+    }
+
+    /**
+     * Draws fluid-kind [MonitorBlockEntity.IconOverlay]s as tinted textured quads
+     * off the block atlas. Fluids don't have ItemStacks (gases, unbucketable fluids,
+     * Mekanism chemicals…) so we bypass [net.minecraft.client.renderer.entity.ItemRenderer]
+     * and sample the still-frame sprite directly from the block atlas, applying the
+     * fluid type's client tint color.
+     *
+     * Immediate mode via `position_tex_color` — same pattern as the text path
+     * ([renderTextBitmap]). Plays nicely with Iris's FullyBufferedMultiBufferSource
+     * since we don't go through any RenderType.
+     */
+    private fun renderFluidIcons(
+        poseStack: PoseStack,
+        icons: List<MonitorBlockEntity.IconOverlay>,
+        pxW: Int,
+        pxH: Int,
+        surfaceW: Float,
+        surfaceH: Float,
+    ) {
+        if (pxW <= 0 || pxH <= 0) return
+        val mc = net.minecraft.client.Minecraft.getInstance()
+        val atlas = mc.modelManager.getAtlas(net.minecraft.world.inventory.InventoryMenu.BLOCK_ATLAS)
+        val matrix = poseStack.last().pose()
+
+        RenderSystem.setShader { GameRenderer.getPositionTexColorShader() }
+        RenderSystem.setShaderTexture(0, net.minecraft.world.inventory.InventoryMenu.BLOCK_ATLAS)
+        RenderSystem.enableBlend()
+        RenderSystem.defaultBlendFunc()
+        RenderSystem.disableCull()
+        RenderSystem.disableDepthTest()
+
+        val builder = Tesselator.getInstance()
+            .begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR)
+        var quadsEmitted = 0
+
+        for (icon in icons) {
+            val rl = net.minecraft.resources.ResourceLocation.tryParse(icon.id) ?: continue
+            val fluid = net.minecraft.core.registries.BuiltInRegistries.FLUID.get(rl)
+            if (fluid == net.minecraft.world.level.material.Fluids.EMPTY) continue
+            val ext = net.neoforged.neoforge.client.extensions.common.IClientFluidTypeExtensions.of(fluid)
+            val fluidStack = net.neoforged.neoforge.fluids.FluidStack(fluid, 1000)
+            val stillLoc = ext.getStillTexture(fluidStack) ?: continue
+            val sprite = atlas.getSprite(stillLoc)
+            val tint = ext.getTintColor(fluidStack)
+
+            val emX = (icon.x.toFloat() / pxW) * surfaceW
+            val emY = (icon.y.toFloat() / pxH) * surfaceH
+            val emW = (icon.wPx.toFloat() / pxW) * surfaceW
+            val emH = (icon.hPx.toFloat() / pxH) * surfaceH
+
+            val u0 = sprite.u0; val u1 = sprite.u1
+            val v0 = sprite.v0; val v1 = sprite.v1
+
+            // Many fluid tints have alpha=0 (water is 0xFF3F76E5 but lava is sometimes 0x00FFFFFF).
+            // Treat alpha=0 as "fully opaque" — it means "no tint override", not transparent.
+            val ta = (tint ushr 24) and 0xFF
+            val r = (tint ushr 16) and 0xFF
+            val g = (tint ushr 8) and 0xFF
+            val b = tint and 0xFF
+            val a = if (ta == 0) 255 else ta
+
+            val z = ICON_Z_LIFT
+            // Match the item-icon CCW winding (bottom-left → bottom-right → top-right → top-left)
+            // so both layers are visible from the same face direction.
+            builder.addVertex(matrix, emX,        emY + emH, z).setUv(u0, v1).setColor(r, g, b, a)
+            builder.addVertex(matrix, emX + emW,  emY + emH, z).setUv(u1, v1).setColor(r, g, b, a)
+            builder.addVertex(matrix, emX + emW,  emY,       z).setUv(u1, v0).setColor(r, g, b, a)
+            builder.addVertex(matrix, emX,        emY,       z).setUv(u0, v0).setColor(r, g, b, a)
+            quadsEmitted++
+        }
+
+        val mesh = builder.build()
+        if (mesh != null) BufferUploader.drawWithShader(mesh)
+        RenderSystem.enableDepthTest()
+        RenderSystem.enableCull()
+    }
+
+    /**
+     * Draws chemical-kind [MonitorBlockEntity.IconOverlay]s as tinted textured quads
+     * off Mekanism's chemical atlas. Uses [MekanismChemicalBridge] for reflection-based
+     * lookup so the renderer compiles without Mekanism on the classpath; absent
+     * Mekanism, each icon draws as a no-op.
+     *
+     * Atlas per sprite: unlike fluids (shared block atlas), chemicals live on
+     * Mekanism's own chemical atlas. The sprite carries its atlas reference via
+     * [TextureAtlasSprite.atlasLocation], so we bind that texture per-icon rather
+     * than assuming a single atlas up front. In practice all chemicals share one
+     * atlas, but binding per sprite is cheap and future-proofs against split atlases.
+     */
+    private fun renderChemicalIcons(
+        poseStack: PoseStack,
+        icons: List<MonitorBlockEntity.IconOverlay>,
+        pxW: Int,
+        pxH: Int,
+        surfaceW: Float,
+        surfaceH: Float,
+    ) {
+        if (pxW <= 0 || pxH <= 0) return
+        if (!MekanismChemicalBridge.isAvailable()) return
+        val matrix = poseStack.last().pose()
+
+        RenderSystem.enableBlend()
+        RenderSystem.defaultBlendFunc()
+        RenderSystem.disableCull()
+        RenderSystem.disableDepthTest()
+        RenderSystem.setShader { GameRenderer.getPositionTexColorShader() }
+
+        // Group by atlas so a single draw call handles each atlas binding.
+        // Mekanism ships one chemical atlas today, but group-by keeps us honest
+        // if they ever split into gas/pigment/infuse atlases.
+        val grouped = LinkedHashMap<net.minecraft.resources.ResourceLocation,
+            MutableList<Pair<MonitorBlockEntity.IconOverlay, MekanismChemicalBridge.Resolved>>>()
+        for (icon in icons) {
+            val resolved = MekanismChemicalBridge.resolve(icon.id) ?: continue
+            val atlasLoc = resolved.sprite.atlasLocation()
+            grouped.getOrPut(atlasLoc) { mutableListOf() }.add(icon to resolved)
+        }
+
+        for ((atlasLoc, bucket) in grouped) {
+            RenderSystem.setShaderTexture(0, atlasLoc)
+            val builder = Tesselator.getInstance()
+                .begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR)
+            for ((icon, resolved) in bucket) {
+                val sprite = resolved.sprite
+                val tint = resolved.tint
+                val emX = (icon.x.toFloat() / pxW) * surfaceW
+                val emY = (icon.y.toFloat() / pxH) * surfaceH
+                val emW = (icon.wPx.toFloat() / pxW) * surfaceW
+                val emH = (icon.hPx.toFloat() / pxH) * surfaceH
+                val u0 = sprite.u0; val u1 = sprite.u1
+                val v0 = sprite.v0; val v1 = sprite.v1
+                val ta = (tint ushr 24) and 0xFF
+                val r = (tint ushr 16) and 0xFF
+                val g = (tint ushr 8) and 0xFF
+                val b = tint and 0xFF
+                // Same "alpha=0 ⇒ fully opaque" rule as fluids — Mekanism stores
+                // some chemicals with 0xFFRRGGBB and others with 0x00RRGGBB.
+                val a = if (ta == 0) 255 else ta
+                val z = ICON_Z_LIFT
+                builder.addVertex(matrix, emX,       emY + emH, z).setUv(u0, v1).setColor(r, g, b, a)
+                builder.addVertex(matrix, emX + emW, emY + emH, z).setUv(u1, v1).setColor(r, g, b, a)
+                builder.addVertex(matrix, emX + emW, emY,       z).setUv(u1, v0).setColor(r, g, b, a)
+                builder.addVertex(matrix, emX,       emY,       z).setUv(u0, v0).setColor(r, g, b, a)
+            }
+            val mesh = builder.build()
+            if (mesh != null) BufferUploader.drawWithShader(mesh)
+        }
+
+        RenderSystem.enableDepthTest()
+        RenderSystem.enableCull()
     }
 
     /**
@@ -401,6 +657,7 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
 
     companion object {
         private const val Z_OFFSET = 0.001f          // tiny push so text floats just above the face
+        private const val ICON_Z_LIFT = 0.5f          // em — push item overlays above text/pixels; empirically a half-em is enough to avoid z-fighting with glyph strokes
         private const val CHAR_ADVANCE_EM = 0.6f     // JBMono Regular's monospace advance
         private const val WORLD_SCREEN_PX_RANGE = 8f // empirically clean across normal viewing distances
         private const val MARGIN_WORLD = 0.04f       // ~4cm bezel; ~4% of a block face

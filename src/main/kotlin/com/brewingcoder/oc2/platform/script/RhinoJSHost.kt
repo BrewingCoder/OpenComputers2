@@ -12,12 +12,16 @@ import com.brewingcoder.oc2.platform.storage.StorageException
 import com.brewingcoder.oc2.platform.storage.WritableMount
 import org.mozilla.javascript.BaseFunction
 import org.mozilla.javascript.Context
+import org.mozilla.javascript.Function as RhinoFunction
 import org.mozilla.javascript.JavaScriptException
 import org.mozilla.javascript.NativeArray
 import org.mozilla.javascript.RhinoException
 import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.ScriptableObject
 import org.mozilla.javascript.Undefined
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Mozilla Rhino-backed JavaScript host (ES5 + many ES6 features). Mirrors
@@ -62,6 +66,8 @@ class RhinoJSHost : ScriptHost {
                     return Undefined.instance
                 }
             })
+            installRequire(scope, env)
+            installUiRunHost(scope, env)
             cx.evaluateString(scope, source, chunkName, 1, null)
             ScriptResult(ok = true, errorMessage = null)
         } catch (e: JavaScriptException) {
@@ -500,6 +506,116 @@ class RhinoJSHost : ScriptHost {
                 (args.getOrNull(3) as? Number)?.toLong()?.toInt() ?: 0,
             ); Undefined.instance
         }
+        defineFsMethod(obj, "fillEllipse", parent, 5) { args ->
+            mon.fillEllipse(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(3) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(4) as? Number)?.toLong()?.toInt() ?: 0,
+            ); Undefined.instance
+        }
+        defineFsMethod(obj, "drawArc", parent, 8) { args ->
+            mon.drawArc(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(3) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(4) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(5) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(6) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(7) as? Number)?.toLong()?.toInt() ?: 0,
+            ); Undefined.instance
+        }
+        defineFsMethod(obj, "drawItem", parent, 5) { args ->
+            mon.drawItem(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(3) as? Number)?.toInt() ?: 0,
+                args.getOrNull(4)?.toString() ?: "",
+            ); Undefined.instance
+        }
+        defineFsMethod(obj, "drawFluid", parent, 5) { args ->
+            mon.drawFluid(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(3) as? Number)?.toInt() ?: 0,
+                args.getOrNull(4)?.toString() ?: "",
+            ); Undefined.instance
+        }
+        defineFsMethod(obj, "drawChemical", parent, 5) { args ->
+            mon.drawChemical(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(3) as? Number)?.toInt() ?: 0,
+                args.getOrNull(4)?.toString() ?: "",
+            ); Undefined.instance
+        }
+        defineFsMethod(obj, "clearIcons", parent, 0) { _ ->
+            mon.clearIcons(); Undefined.instance
+        }
+
+        // ---- Engine helpers (cell-geometry, ARGB math, text sugar, small font) ----
+        // Lifted out of ui_v1 libraries so both language ports share one impl.
+        defineFsMethod(obj, "getCellMetrics", parent, 0) { _ ->
+            val m = mon.getCellMetrics()
+            cx().newArray(parent, arrayOf<Any?>(m.cols, m.rows, m.pxPerCol, m.pxPerRow))
+        }
+        defineFsMethod(obj, "snapCellRect", parent, 2) { args ->
+            val y = (args.getOrNull(0) as? Number)?.toInt() ?: 0
+            val h = (args.getOrNull(1) as? Number)?.toInt() ?: 0
+            val r = mon.snapCellRect(y, h)
+            cx().newArray(parent, arrayOf<Any?>(r.snappedY, r.snappedH, r.textRow))
+        }
+        defineFsMethod(obj, "argb", parent, 4) { args ->
+            mon.argb(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(3) as? Number)?.toInt() ?: 0,
+            )
+        }
+        defineFsMethod(obj, "lighten", parent, 2) { args ->
+            mon.lighten(
+                (args.getOrNull(0) as? Number)?.toLong()?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+            )
+        }
+        defineFsMethod(obj, "dim", parent, 1) { args ->
+            mon.dim((args.getOrNull(0) as? Number)?.toLong()?.toInt() ?: 0)
+        }
+        defineFsMethod(obj, "drawText", parent, 5) { args ->
+            mon.drawText(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                asString(args, 2),
+                (args.getOrNull(3) as? Number)?.toLong()?.toInt() ?: 0,
+                (args.getOrNull(4) as? Number)?.toLong()?.toInt() ?: 0,
+            ); Undefined.instance
+        }
+        defineFsMethod(obj, "fillText", parent, 6) { args ->
+            val chArg = asString(args, 3)
+            val ch = if (chArg.isNotEmpty()) chArg[0] else ' '
+            mon.fillText(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(2) as? Number)?.toInt() ?: 0,
+                ch,
+                (args.getOrNull(4) as? Number)?.toLong()?.toInt() ?: 0,
+                (args.getOrNull(5) as? Number)?.toLong()?.toInt() ?: 0,
+            ); Undefined.instance
+        }
+        defineFsMethod(obj, "drawSmallText", parent, 4) { args ->
+            mon.drawSmallText(
+                (args.getOrNull(0) as? Number)?.toInt() ?: 0,
+                (args.getOrNull(1) as? Number)?.toInt() ?: 0,
+                asString(args, 2),
+                (args.getOrNull(3) as? Number)?.toLong()?.toInt() ?: 0,
+            ); Undefined.instance
+        }
         return obj
     }
 
@@ -515,6 +631,277 @@ class RhinoJSHost : ScriptHost {
                 return Undefined.instance
             }
         }
+
+    /**
+     * Install a `require(name)` global. Searches `/lib/?.js` then `/rom/lib/?.js`
+     * — user files under `/lib/` shadow ROM copies. Each module is wrapped in
+     * `(function(module, exports, require) { ...body... })` and invoked; `module.exports`
+     * is returned (defaults to the same object as `exports`, CommonJS-style).
+     *
+     * Per-eval cache: fresh on every script run, matching the Context lifecycle.
+     * No circular-require detection — a self-requiring module will stack-overflow.
+     */
+    private fun installRequire(scope: ScriptableObject, env: ScriptEnv) {
+        val cache = mutableMapOf<String, Any?>()
+        val searchPaths = listOf("lib/%s.js", "rom/lib/%s.js")
+
+        val requireFn = object : BaseFunction(scope, ScriptableObject.getFunctionPrototype(scope)) {
+            override fun call(cx: Context, callScope: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any? {
+                val name = asString(args, 0)
+                if (name.isEmpty()) throw Context.reportRuntimeError("require() requires a module name")
+                cache[name]?.let { return it }
+
+                val tried = mutableListOf<String>()
+                var source: String? = null
+                for (pattern in searchPaths) {
+                    val path = pattern.format(name)
+                    tried.add("/$path")
+                    try {
+                        if (env.mount.exists(path) && !env.mount.isDirectory(path)) {
+                            source = readMountFile(env.mount, path)
+                            break
+                        }
+                    } catch (_: StorageException) { /* try next */ }
+                }
+                if (source == null) {
+                    throw Context.reportRuntimeError(
+                        "module '$name' not found; searched: ${tried.joinToString(";")}"
+                    )
+                }
+
+                // CommonJS wrapper. Evaluating a parenthesized function expression yields
+                // the Function value, which we then invoke with (module, exports, require).
+                // `this` inside the wrapper is `module.exports`, matching Node's behavior
+                // so users can write `this.foo = ...` or `module.exports = ...` interchangeably.
+                val wrapped = "(function (module, exports, require) {\n$source\n})"
+                val wrapperAny = try {
+                    cx.evaluateString(scope, wrapped, "@$name", 1, null)
+                } catch (e: RhinoException) {
+                    throw Context.reportRuntimeError("compile error in module '$name': ${e.message}")
+                }
+                val wrapper = wrapperAny as? org.mozilla.javascript.Function
+                    ?: throw Context.reportRuntimeError("module '$name' did not compile to a function")
+
+                val moduleObj = NativeObject()
+                val exportsObj = NativeObject()
+                ScriptableObject.putProperty(moduleObj, "exports", exportsObj)
+
+                try {
+                    wrapper.call(cx, scope, exportsObj, arrayOf<Any?>(moduleObj, exportsObj, this))
+                } catch (e: RhinoException) {
+                    throw Context.reportRuntimeError("error loading module '$name': ${e.message}")
+                }
+
+                val result = ScriptableObject.getProperty(moduleObj, "exports")
+                cache[name] = result
+                return result
+            }
+        }
+        ScriptableObject.putProperty(scope, "require", requireFn)
+    }
+
+    private fun readMountFile(mount: WritableMount, path: String): String {
+        mount.openForRead(path).use { ch ->
+            val size = ch.size().toInt()
+            val buf = java.nio.ByteBuffer.allocate(size)
+            while (buf.hasRemaining()) {
+                val n = ch.read(buf)
+                if (n < 0) break
+            }
+            return String(buf.array(), 0, buf.position(), Charsets.UTF_8)
+        }
+    }
+
+    /**
+     * Install the JS-side event loop host-binding and browser-style timers.
+     *
+     * JS lacks Lua's `os.pullEvent` (that requires Rhino continuations — deferred,
+     * see `docs/12-followups.md`). Instead the UI library's `ui.run(root)` calls
+     * host-provided `__uiRun(dispatcher)`, which:
+     *   - enters a blocking loop polling [ScriptEnv.events]
+     *   - for each script event, invokes [dispatcher] via Rhino reentry with an
+     *     event object `{name, args}`
+     *   - for synthetic timer events (produced by [setTimeout]/[setInterval]),
+     *     bypasses [dispatcher] and fires the stored callback directly
+     *   - returns when `__uiExit()` flips the running flag or the worker thread is interrupted
+     *
+     * `setTimeout(fn, ms)` / `setInterval(fn, ms)` spawn daemon threads that
+     * sleep and then offer a synthetic [ScriptEvent] into the queue. Callbacks
+     * therefore only fire while `__uiRun` is actively looping — matches browser
+     * event-loop semantics (no setTimeout without a running event loop).
+     *
+     * Per-eval state: timer callbacks + running flag live in this closure, so
+     * every [eval] call gets fresh state. Any orphaned timer threads from a
+     * previous eval keep offering into THEIR old queue, which nobody polls —
+     * harmless until the daemon thread terminates on JVM exit or interrupt.
+     */
+    private fun installUiRunHost(scope: ScriptableObject, env: ScriptEnv) {
+        val running = AtomicBoolean(false)
+        val timerCounter = AtomicInteger(1)
+        // One-shot callbacks: removed on fire OR on clearTimeout.
+        val timeoutCallbacks = ConcurrentHashMap<Int, RhinoFunction>()
+        // Recurring callbacks: removed on clearInterval; cancel flag tells daemon thread to stop.
+        val intervalCallbacks = ConcurrentHashMap<Int, RhinoFunction>()
+        val intervalCancels = ConcurrentHashMap<Int, AtomicBoolean>()
+
+        // __uiRun(dispatcher) — blocks until __uiExit or interrupt.
+        ScriptableObject.putProperty(scope, "__uiRun", object : BaseFunction(scope, getFunctionPrototype(scope)) {
+            override fun call(cx: Context, callScope: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any? {
+                val dispatcher = args.getOrNull(0) as? RhinoFunction
+                    ?: throw Context.reportRuntimeError("__uiRun: first argument must be a function")
+                if (!running.compareAndSet(false, true)) {
+                    throw Context.reportRuntimeError("__uiRun: already running (reentrant call)")
+                }
+                try {
+                    while (running.get()) {
+                        val ev = try {
+                            env.events.poll(null, 60_000L)
+                        } catch (_: InterruptedException) {
+                            Thread.currentThread().interrupt(); break
+                        } ?: continue
+
+                        when (ev.name) {
+                            UI_TIMEOUT_EVENT -> {
+                                val id = (ev.args.firstOrNull() as? Number)?.toInt() ?: continue
+                                val fn = timeoutCallbacks.remove(id) ?: continue
+                                invokeQuietly(cx, scope, fn, emptyArray())
+                            }
+                            UI_INTERVAL_EVENT -> {
+                                val id = (ev.args.firstOrNull() as? Number)?.toInt() ?: continue
+                                val fn = intervalCallbacks[id] ?: continue  // cleared after scheduling
+                                invokeQuietly(cx, scope, fn, emptyArray())
+                            }
+                            else -> {
+                                val evObj = scriptEventToJs(ev, scope)
+                                invokeQuietly(cx, scope, dispatcher, arrayOf<Any?>(evObj))
+                            }
+                        }
+                    }
+                } finally {
+                    running.set(false)
+                }
+                return Undefined.instance
+            }
+        })
+
+        // __uiExit() — flips the flag; __uiRun loop exits after the current poll.
+        ScriptableObject.putProperty(scope, "__uiExit", object : BaseFunction(scope, getFunctionPrototype(scope)) {
+            override fun call(cx: Context, callScope: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any? {
+                running.set(false)
+                return Undefined.instance
+            }
+        })
+
+        // setTimeout(fn, ms) → id
+        ScriptableObject.putProperty(scope, "setTimeout", object : BaseFunction(scope, getFunctionPrototype(scope)) {
+            override fun call(cx: Context, callScope: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any? {
+                val fn = args.getOrNull(0) as? RhinoFunction
+                    ?: throw Context.reportRuntimeError("setTimeout: first argument must be a function")
+                val ms = (args.getOrNull(1) as? Number)?.toLong()?.coerceAtLeast(0L) ?: 0L
+                val id = timerCounter.getAndIncrement()
+                timeoutCallbacks[id] = fn
+                Thread({
+                    try {
+                        if (ms > 0) Thread.sleep(ms)
+                        // Only offer if not already cleared. Offering a cleared one
+                        // is fine (lookup returns null) but avoids cluttering the queue.
+                        if (timeoutCallbacks.containsKey(id)) {
+                            env.events.offer(ScriptEvent(UI_TIMEOUT_EVENT, listOf(id)))
+                        }
+                    } catch (_: InterruptedException) {
+                        timeoutCallbacks.remove(id)
+                    }
+                }, "OC2 js-setTimeout id=$id").apply { isDaemon = true }.start()
+                return id
+            }
+        })
+
+        // clearTimeout(id)
+        ScriptableObject.putProperty(scope, "clearTimeout", object : BaseFunction(scope, getFunctionPrototype(scope)) {
+            override fun call(cx: Context, callScope: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any? {
+                val id = (args.getOrNull(0) as? Number)?.toInt() ?: return Undefined.instance
+                timeoutCallbacks.remove(id)
+                return Undefined.instance
+            }
+        })
+
+        // setInterval(fn, ms) → id
+        ScriptableObject.putProperty(scope, "setInterval", object : BaseFunction(scope, getFunctionPrototype(scope)) {
+            override fun call(cx: Context, callScope: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any? {
+                val fn = args.getOrNull(0) as? RhinoFunction
+                    ?: throw Context.reportRuntimeError("setInterval: first argument must be a function")
+                // Minimum 1ms to avoid tight loops.
+                val ms = (args.getOrNull(1) as? Number)?.toLong()?.coerceAtLeast(1L) ?: 1L
+                val id = timerCounter.getAndIncrement()
+                val cancel = AtomicBoolean(false)
+                intervalCallbacks[id] = fn
+                intervalCancels[id] = cancel
+                Thread({
+                    try {
+                        while (!cancel.get()) {
+                            Thread.sleep(ms)
+                            if (cancel.get()) break
+                            env.events.offer(ScriptEvent(UI_INTERVAL_EVENT, listOf(id)))
+                        }
+                    } catch (_: InterruptedException) { /* drop */ }
+                    intervalCallbacks.remove(id)
+                    intervalCancels.remove(id)
+                }, "OC2 js-setInterval id=$id").apply { isDaemon = true }.start()
+                return id
+            }
+        })
+
+        // clearInterval(id)
+        ScriptableObject.putProperty(scope, "clearInterval", object : BaseFunction(scope, getFunctionPrototype(scope)) {
+            override fun call(cx: Context, callScope: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any? {
+                val id = (args.getOrNull(0) as? Number)?.toInt() ?: return Undefined.instance
+                intervalCancels[id]?.set(true)
+                intervalCallbacks.remove(id)
+                return Undefined.instance
+            }
+        })
+    }
+
+    /** Build the JS event object handed to a `__uiRun` dispatcher: `{name, args: [...]}`. */
+    private fun scriptEventToJs(ev: ScriptEvent, parent: Scriptable): ScriptableObject {
+        val obj = NativeObject()
+        ScriptableObject.putProperty(obj, "name", ev.name)
+        val arr = cx().newArray(parent, ev.args.size)
+        for ((i, a) in ev.args.withIndex()) {
+            arr.put(i, arr, jsPrimitive(a))
+        }
+        ScriptableObject.putProperty(obj, "args", arr)
+        return obj
+    }
+
+    /** Coerce an event arg (String/Int/Long/Double/Boolean/null) to a JS-safe value. */
+    private fun jsPrimitive(v: Any?): Any? = when (v) {
+        null -> null
+        is Boolean, is String -> v
+        is Int -> v
+        is Long -> v.toDouble()
+        is Float -> v.toDouble()
+        is Double -> v
+        else -> v.toString()
+    }
+
+    /**
+     * Invoke a JS function from inside `__uiRun`'s loop. Swallows exceptions so
+     * one bad callback doesn't take down the whole event loop — the loop is the
+     * program's outermost control flow, and a broken timer shouldn't kill the
+     * dashboard.
+     */
+    private fun invokeQuietly(cx: Context, scope: Scriptable, fn: RhinoFunction, args: Array<out Any?>) {
+        try {
+            fn.call(cx, scope, scope, args)
+        } catch (_: RhinoException) { /* keep loop alive */ }
+        catch (_: JavaScriptException) { /* keep loop alive */ }
+    }
+
+    private companion object {
+        const val UI_TIMEOUT_EVENT = "__js_timeout_fire"
+        const val UI_INTERVAL_EVENT = "__js_interval_fire"
+    }
 
     /** Build the fs API as a Rhino object with one [BaseFunction] per method. */
     private fun makeFsObject(mount: WritableMount, cwd: String, parent: Scriptable): ScriptableObject {

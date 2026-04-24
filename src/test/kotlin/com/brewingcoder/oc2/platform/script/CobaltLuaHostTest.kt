@@ -293,6 +293,14 @@ class CobaltLuaHostTest {
         override fun drawLine(x1: Int, y1: Int, x2: Int, y2: Int, argb: Int) { log.add("drawLine($x1,$y1,$x2,$y2)") }
         override fun drawGradientV(x: Int, y: Int, w: Int, h: Int, topArgb: Int, bottomArgb: Int) { log.add("drawGradientV($x,$y,$w,$h)") }
         override fun fillCircle(cx: Int, cy: Int, r: Int, argb: Int) { log.add("fillCircle($cx,$cy,$r)") }
+        override fun fillEllipse(cx: Int, cy: Int, rx: Int, ry: Int, argb: Int) { log.add("fillEllipse($cx,$cy,$rx,$ry)") }
+        override fun drawArc(cx: Int, cy: Int, rx: Int, ry: Int, thickness: Int, startDeg: Int, sweepDeg: Int, argb: Int) {
+            log.add("drawArc($cx,$cy,$rx,$ry,t=$thickness,$startDeg..${startDeg + sweepDeg})")
+        }
+        override fun drawItem(x: Int, y: Int, wPx: Int, hPx: Int, itemId: String) { log.add("drawItem($x,$y,$wPx,$hPx,$itemId)") }
+        override fun drawFluid(x: Int, y: Int, wPx: Int, hPx: Int, fluidId: String) { log.add("drawFluid($x,$y,$wPx,$hPx,$fluidId)") }
+        override fun drawChemical(x: Int, y: Int, wPx: Int, hPx: Int, chemicalId: String) { log.add("drawChemical($x,$y,$wPx,$hPx,$chemicalId)") }
+        override fun clearIcons() { log.add("clearIcons()") }
     }
 
     @Test
