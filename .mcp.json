@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "interagent": {
-      "type": "http",
-      "url": "https://iac.brewingcoder.com/mcp/scott-kathy-treavor-brandon"
-    }
-  }
-}

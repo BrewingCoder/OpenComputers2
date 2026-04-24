@@ -32,9 +32,27 @@ repo
 
 # Claude Code local runtime
 .claude/
+CLAUDE.md
+HANDOFF.md
+
+# local MCP server config
+.mcp.json
 
 # local dev scripts (not published)
 scripts/
+
+# CC:T jar unpacked at repo root for MSDF reference — do not commit
+/dan200/
+/assets/computercraft/
+/assets/minecraft/
+/data/computercraft/
+/data/create/
+/data/minecraft/
+/data/toolbelt/
+/computercraft*.mixins.json
+/computercraft*.accesswidener
+/pack.mcmeta
+/pack.png
 
 # stray debug screenshots at repo root
 *.png

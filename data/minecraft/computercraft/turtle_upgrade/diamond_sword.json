@@ -1,7 +1,0 @@
-{
-  "type": "computercraft:tool",
-  "adjective": {"translate": "upgrade.minecraft.diamond_sword.adjective"},
-  "breakable": "computercraft:turtle_sword_harvestable",
-  "damageMultiplier": 9.0,
-  "item": "minecraft:diamond_sword"
-}
