@@ -1,5 +1,6 @@
 package com.brewingcoder.oc2.platform.vm
 
+import li.cil.ceres.BinarySerialization
 import li.cil.sedna.api.device.BlockDevice
 import li.cil.sedna.api.device.PhysicalMemory
 import li.cil.sedna.device.memory.Memory
@@ -8,6 +9,7 @@ import li.cil.sedna.device.virtio.VirtIOBlockDevice
 import li.cil.sedna.riscv.R5Board
 import java.io.Closeable
 import java.io.File
+import java.nio.ByteBuffer
 
 /**
  * Pure-Kotlin holder for a Sedna [R5Board] + its attached devices. Lives in
@@ -33,6 +35,7 @@ class ControlPlaneVm(
     val consoleCapacity: Int = ConsoleCapture.DEFAULT_CAPACITY,
     bootImage: ByteArray? = null,
     bootArgs: String? = null,
+    snapshot: ByteArray? = null,
 ) : Closeable {
 
     val board: R5Board = R5Board()
@@ -55,22 +58,36 @@ class ControlPlaneVm(
         }.start
 
     init {
-        // Devices must be added before initialize() so the device tree includes them.
+        // Idempotent — registers Sedna's hand-rolled Ceres serializers exactly
+        // once per JVM. Required before any snapshot/restore can run.
+        SednaSerializerRegistration.ensure()
+        // Devices must be added before initialize() / deserialize so the address
+        // space layout matches what the snapshot was taken against.
         board.addDevice(ramBase, ram)
         board.addDevice(uart)
         board.setStandardOutputDevice(uart)
         virtioBlock?.let { board.addDevice(it) }
-        // bootArgs lands in the auto-built device tree as `chosen/bootargs` —
-        // Linux reads it as the kernel command line on entry.
-        bootArgs?.let { board.setBootArguments(it) }
-        // Firmware/kernel goes at the address Sedna's reset vector will jump
-        // to. Loading must happen after addDevice (so RAM is mapped) and
-        // before initialize() (so the CPU reset registers see the bytes).
-        bootImage?.let {
-            ControlPlaneBoot.loadBytes(board.memoryMap, board.defaultProgramStart, it)
+
+        if (snapshot != null) {
+            // Restore path: Ceres overwrites CPU/MMU/RAM/device state in place
+            // from the captured snapshot. We deliberately skip initialize() —
+            // it would reset the reset vector and clobber the restored PC —
+            // and skip bootImage/bootArgs since the snapshot already encodes
+            // whatever the guest wrote into RAM and the device tree.
+            require(bootImage == null) { "bootImage and snapshot are mutually exclusive" }
+            require(bootArgs == null) { "bootArgs and snapshot are mutually exclusive" }
+            BinarySerialization.deserialize(ByteBuffer.wrap(snapshot), R5Board::class.java, board)
+        } else {
+            // Fresh boot path:
+            //  - bootArgs → device tree's `chosen/bootargs`
+            //  - bootImage → loaded at defaultProgramStart before reset programs the CPU
+            bootArgs?.let { board.setBootArguments(it) }
+            bootImage?.let {
+                ControlPlaneBoot.loadBytes(board.memoryMap, board.defaultProgramStart, it)
+            }
+            board.initialize()
+            board.setRunning(true)
         }
-        board.initialize()
-        board.setRunning(true)
     }
 
     /** Total cycles executed since this VM was constructed. */
@@ -86,6 +103,29 @@ class ControlPlaneVm(
         board.step(cycleBudget)
         console.drain(uart)
         return cycles
+    }
+
+    /**
+     * Capture the VM's running state as an opaque byte array. Includes CPU
+     * registers, MMU/TLB state, RAM contents, virtio queue state — everything
+     * Ceres can see through the [li.cil.ceres.api.Serialized] annotations
+     * Sedna stamps on its own classes.
+     *
+     * Size scales with [ramBytes] — a 64 MB RAM produces a snapshot in the
+     * tens of MB range. Callers should stream this to disk rather than keep
+     * it on the heap (a follow-up commit will add a streaming variant for
+     * the BE save path).
+     *
+     * The returned array is self-contained; pair it with the same RAM size +
+     * disk file at restore time and the VM resumes mid-instruction. The disk
+     * image itself is NOT in the snapshot — it lives on the host filesystem
+     * and survives across snapshot/restore independently.
+     */
+    fun snapshot(): ByteArray {
+        val buffer = BinarySerialization.serialize(board, R5Board::class.java)
+        val out = ByteArray(buffer.remaining())
+        buffer.get(out)
+        return out
     }
 
     /**
