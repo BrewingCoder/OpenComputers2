@@ -318,6 +318,17 @@ Other adapters (CC, ID, NeoForge caps) deferred.
   failed read or restore logs and falls through to a fresh boot — corrupt
   snapshots can never brick the block. **Supersedes the "chunk-unload pause/
   resume" section below.**
+- 2026-04-27: Default banner boot firmware — `ControlPlaneBoot.bannerStub`
+  emits a hand-assembled RV64 program that writes a banner string to the
+  UART16550A THR one byte at a time, polling `LSR.THRE` between writes
+  (Sedna's UART defaults to FIFO-disabled mode, so without the wait only
+  the last byte of a burst would be observable). Wired into
+  `ControlPlaneVm` via a new `bannerText` parameter and into
+  `ControlPlaneBlockEntity` as the fresh-boot fallback so a freshly placed
+  Control Plane immediately shows `OC2 Control Plane v1` in `consoleTail()`
+  instead of spinning silently on illegal-instruction traps. When a real
+  vmlinux drops into `assets/oc2/control-plane/`, that takes over and the
+  banner becomes the no-kernel fallback.
 
 ### Next — kernel + initramfs (no firmware = no boot)
 

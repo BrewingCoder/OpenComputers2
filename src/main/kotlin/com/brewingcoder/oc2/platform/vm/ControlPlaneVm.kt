@@ -41,6 +41,7 @@ class ControlPlaneVm(
     bootArgs: String? = null,
     snapshot: ByteArray? = null,
     snapshotStream: InputStream? = null,
+    bannerText: String? = null,
 ) : Closeable {
 
     val board: R5Board = R5Board()
@@ -99,8 +100,15 @@ class ControlPlaneVm(
             // Fresh boot path:
             //  - bootArgs → device tree's `chosen/bootargs`
             //  - bootImage → loaded at defaultProgramStart before reset programs the CPU
+            //  - bannerText → if no explicit bootImage, synthesize a banner-emitting stub
+            //    using the runtime uartBase so a freshly placed Control Plane shows life.
+            require(!(bootImage != null && bannerText != null)) {
+                "bootImage and bannerText are mutually exclusive"
+            }
             bootArgs?.let { board.setBootArguments(it) }
-            bootImage?.let {
+            val effectiveBootImage = bootImage
+                ?: bannerText?.let { ControlPlaneBoot.bannerStub(uartBase = uartBase, banner = it) }
+            effectiveBootImage?.let {
                 ControlPlaneBoot.loadBytes(board.memoryMap, board.defaultProgramStart, it)
             }
             board.initialize()

@@ -211,6 +211,7 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
             } ?: ControlPlaneVm(
                 diskFile = diskFile,
                 diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
+                bannerText = DEFAULT_BANNER,
             )
         } catch (ex: Exception) {
             // Stale or corrupt snapshot must not brick the BE. Leave the bad
@@ -223,6 +224,7 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
             ControlPlaneVm(
                 diskFile = diskFile,
                 diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
+                bannerText = DEFAULT_BANNER,
             )
         }
         vm = v
@@ -369,6 +371,14 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         private const val NBT_VM_UUID = "vm_uuid"
         private const val NBT_POWERED = "powered"
         private const val NBT_CHANNEL = "channelId"
+
+        /**
+         * Default banner emitted on fresh boot when no kernel resource is
+         * present. Picked up by [ControlPlaneVm.bannerText] which synthesizes
+         * a tiny RV64 stub that polls LSR.THRE and writes each char to the
+         * UART. Visible in `consoleTail()` and the right-click status line.
+         */
+        private const val DEFAULT_BANNER: String = "OC2 Control Plane v1\n"
 
         /**
          * Persist on cycle counts where the low N bits are zero, so we flush every
