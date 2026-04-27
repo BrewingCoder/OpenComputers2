@@ -46,21 +46,53 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
     /** Stable id used as the disk-image filename. Generated on first tick if absent. */
     private var vmUuid: UUID? = null
 
+    /**
+     * Whether the VM should be ticking. Defaults to `true` so freshly placed
+     * Control Planes boot immediately. Toggled via [togglePower]. Powering off
+     * closes the live VM (releasing RAM + disk FD); powering on lets the next
+     * [tick] lazy-boot a fresh VM that re-attaches the same disk image.
+     *
+     * RAM contents are NOT preserved across power cycles today — once we ship
+     * a Ceres-based snapshot, this becomes "suspend/resume" instead.
+     */
+    private var powered: Boolean = true
+
+    val isPowered: Boolean get() = powered
+
     /** Cheap status string for the right-click message + future status display. */
     fun statusLine(): String {
         val v = vm
+        val powerLabel = if (powered) "ON" else "OFF"
         if (v == null) {
-            return "Control Plane: VM not yet booted (persisted=$persistedCycles cycles)"
+            return "Control Plane [$powerLabel]: VM not booted (persisted=$persistedCycles cycles)"
         }
         val recent = v.console.recentLines(2).joinToString(" | ")
         val tail = if (recent.isNotEmpty()) " | $recent" else ""
-        return "Control Plane: ${v.describe()}$tail"
+        return "Control Plane [$powerLabel]: ${v.describe()}$tail"
+    }
+
+    /**
+     * Flip the powered flag, with the side effect of closing the live VM if
+     * we're powering off. Returns the new powered state. Caller (the Block's
+     * use handler) is responsible for `setChanged` flush + chat feedback.
+     */
+    fun togglePower(): Boolean {
+        powered = !powered
+        if (!powered) {
+            // Drain any final UART output before closing so the status line
+            // we'll print to chat reflects the last guest activity.
+            vm?.close()
+            vm = null
+        }
+        setChanged()
+        return powered
     }
 
     /** Called every server tick by [ControlPlaneBlock.getTicker]. */
     fun tick() {
         val lvl = level ?: return
         if (lvl.isClientSide) return
+        if (!powered) return
         val v = vm ?: bootVm(lvl as ServerLevel)
         v.step(ControlPlaneVm.DEFAULT_CYCLES_PER_TICK)
         // Persist just often enough that a sudden world unload doesn't lose
@@ -145,6 +177,7 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         super.saveAdditional(tag, registries)
         val live = vm?.cycles ?: persistedCycles
         tag.putLong(NBT_CYCLES, live)
+        tag.putBoolean(NBT_POWERED, powered)
         vmUuid?.let { tag.putUUID(NBT_VM_UUID, it) }
     }
 
@@ -153,6 +186,9 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         if (tag.contains(NBT_CYCLES)) {
             persistedCycles = tag.getLong(NBT_CYCLES)
         }
+        // Default-true preserves the prior behavior for blocks placed before
+        // power state existed — they keep ticking after the upgrade.
+        powered = if (tag.contains(NBT_POWERED)) tag.getBoolean(NBT_POWERED) else true
         if (tag.hasUUID(NBT_VM_UUID)) {
             vmUuid = tag.getUUID(NBT_VM_UUID)
         }
@@ -161,6 +197,7 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
     companion object {
         private const val NBT_CYCLES = "cycles"
         private const val NBT_VM_UUID = "vm_uuid"
+        private const val NBT_POWERED = "powered"
 
         /**
          * Persist on cycle counts where the low N bits are zero, so we flush every

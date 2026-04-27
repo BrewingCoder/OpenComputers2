@@ -252,6 +252,8 @@ class ControlPlaneBlock(properties: Properties) : BaseEntityBlock(properties) {
 
     // ------------------------------------------------------------------
     // Right-click: status surface (proof-of-life). Real GUI ships later.
+    //   - empty hand               → status line
+    //   - sneak + empty hand       → toggle VM power (ON/OFF)
     // ------------------------------------------------------------------
 
     override fun useWithoutItem(
@@ -264,9 +266,18 @@ class ControlPlaneBlock(properties: Properties) : BaseEntityBlock(properties) {
         if (level.isClientSide) return InteractionResult.SUCCESS
         val lowerPos = if (state.getValue(HALF) == DoubleBlockHalf.LOWER) pos else pos.below()
         val be = level.getBlockEntity(lowerPos) as? ControlPlaneBlockEntity
-        val msg = be?.statusLine() ?: "Control Plane: BE not present"
-        player.sendSystemMessage(net.minecraft.network.chat.Component.literal(msg))
-        OpenComputers2.LOGGER.info("control plane @ {} status: {}", lowerPos, msg)
+        if (be == null) {
+            player.sendSystemMessage(Component.literal("Control Plane: BE not present"))
+            return InteractionResult.CONSUME
+        }
+        val msg = if (player.isShiftKeyDown) {
+            val nowPowered = be.togglePower()
+            "Control Plane power: ${if (nowPowered) "ON" else "OFF"}"
+        } else {
+            be.statusLine()
+        }
+        player.sendSystemMessage(Component.literal(msg))
+        OpenComputers2.LOGGER.info("control plane @ {} action: {}", lowerPos, msg)
         return InteractionResult.CONSUME
     }
 
