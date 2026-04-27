@@ -1,6 +1,7 @@
 package com.brewingcoder.oc2.storage
 
 import com.brewingcoder.oc2.OpenComputers2
+import com.brewingcoder.oc2.platform.control.ControlPlaneRegistry
 import com.brewingcoder.oc2.platform.network.NetworkInboxes
 import com.brewingcoder.oc2.platform.storage.StorageProvider
 import net.minecraft.server.MinecraftServer
@@ -28,18 +29,20 @@ object OC2ServerContext {
         val server: MinecraftServer,
         val storageProvider: WorldStorageProvider,
         val idAssigner: ComputerIdAssigner,
+        val controlPlanes: ControlPlaneRegistry,
     )
 
     /** Throws if accessed off-server (no world loaded). Callers guard with `level?.server`. */
     fun get(server: MinecraftServer): Accessor {
         val h = holder ?: error("OC2ServerContext accessed before ServerStartingEvent")
         check(h.server === server) { "OC2ServerContext server mismatch" }
-        return Accessor(h.storageProvider, h.idAssigner)
+        return Accessor(h.storageProvider, h.idAssigner, h.controlPlanes)
     }
 
     class Accessor internal constructor(
         val storageProvider: StorageProvider,
         private val idAssigner: ComputerIdAssigner,
+        val controlPlanes: ControlPlaneRegistry,
     ) {
         /** Counter-only assignment. Prefer [assignComputerIdAt] for blocks — it's crash-safe. */
         fun assignComputerId(): Int = idAssigner.assign("computer")
@@ -59,7 +62,8 @@ object OC2ServerContext {
         val root = server.getWorldPath(LevelResource(FOLDER_NAME))
         val provider = WorldStorageProvider(root, WorldStorageProvider.DEFAULT_CAPACITY_BYTES)
         val assigner = ComputerIdAssigner(root.resolve("ids.json"))
-        holder = Holder(server, provider, assigner)
+        val controlPlanes = ControlPlaneRegistry(root.resolve("control-planes.txt"))
+        holder = Holder(server, provider, assigner, controlPlanes)
         OpenComputers2.LOGGER.info("OC2 server context initialized at {}", root)
     }
 

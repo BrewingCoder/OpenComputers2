@@ -1,9 +1,13 @@
 package com.brewingcoder.oc2.block
 
 import com.brewingcoder.oc2.OpenComputers2
+import com.brewingcoder.oc2.platform.control.ControlPlaneRegistry
+import com.brewingcoder.oc2.storage.OC2ServerContext
 import com.mojang.serialization.MapCodec
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
+import net.minecraft.network.chat.Component
+import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.InteractionResult
 import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.entity.player.Player
@@ -72,11 +76,63 @@ class ControlPlaneBlock(properties: Properties) : BaseEntityBlock(properties) {
     ) {
         super.setPlacedBy(level, pos, state, placer, stack)
         if (level.isClientSide) return
+        // If the placer isn't a real player (dispenser, command, etc.), reject —
+        // ownership-keyed disk paths require a UUID anchor.
+        val player = placer as? Player
+        if (player == null) {
+            rejectPlacement(level, pos, stack, null, "Control Plane requires a player owner; placement refused.")
+            return
+        }
+        val serverLevel = level as? ServerLevel ?: return
+        val registry = OC2ServerContext.get(serverLevel.server).controlPlanes
+        val ownerId = player.uuid
+        val location = ControlPlaneRegistry.Location(
+            dimension = serverLevel.dimension().location().toString(),
+            x = pos.x, y = pos.y, z = pos.z,
+        )
+        if (!registry.assign(ownerId, location)) {
+            val existing = registry.locationFor(ownerId)
+            rejectPlacement(
+                level, pos, stack, player,
+                "You already own a Control Plane at ${existing?.dimension} ${existing?.x},${existing?.y},${existing?.z}. " +
+                    "Break it before placing a new one.",
+            )
+            return
+        }
         level.setBlock(
             pos.above(),
             defaultBlockState().setValue(HALF, DoubleBlockHalf.UPPER),
             Block.UPDATE_ALL,
         )
+    }
+
+    /**
+     * Roll back a placement: clear the lower half (which exists by the time
+     * setPlacedBy fires), restore the item to the placer (if any), and surface
+     * an explanation in chat. Suppresses drops so the lower-half block doesn't
+     * pop out as loot in addition to the returned stack.
+     */
+    private fun rejectPlacement(
+        level: Level,
+        pos: BlockPos,
+        stack: ItemStack,
+        player: Player?,
+        message: String,
+    ) {
+        level.setBlock(
+            pos,
+            net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(),
+            Block.UPDATE_ALL or Block.UPDATE_SUPPRESS_DROPS,
+        )
+        if (player != null && !player.isCreative && !stack.isEmpty) {
+            val returned = stack.copy()
+            returned.count = 1
+            if (!player.inventory.add(returned)) {
+                player.drop(returned, false)
+            }
+        }
+        player?.sendSystemMessage(Component.literal(message))
+        OpenComputers2.LOGGER.info("control plane placement rejected @ {}: {}", pos, message)
     }
 
     // ------------------------------------------------------------------
@@ -122,6 +178,36 @@ class ControlPlaneBlock(properties: Properties) : BaseEntityBlock(properties) {
         DoubleBlockHalf.LOWER -> pos.above()
         DoubleBlockHalf.UPPER -> pos.below()
         else -> null
+    }
+
+    /**
+     * Fires for every block removal — player breaks, /setblock, explosions,
+     * piston pulls. We use it as the canonical "the Control Plane no longer
+     * exists" signal so the registry stays consistent regardless of the
+     * removal path.
+     *
+     * Only the LOWER half is registered (per [setPlacedBy]); the upper half's
+     * [onRemove] is a no-op against the registry. Skips when [newState] is
+     * still us (block-state changes that preserve identity).
+     */
+    override fun onRemove(
+        state: BlockState,
+        level: Level,
+        pos: BlockPos,
+        newState: BlockState,
+        isMoving: Boolean,
+    ) {
+        if (newState.block !== this && state.getValue(HALF) == DoubleBlockHalf.LOWER) {
+            (level as? ServerLevel)?.let { serverLevel ->
+                val registry = OC2ServerContext.get(serverLevel.server).controlPlanes
+                val location = ControlPlaneRegistry.Location(
+                    dimension = serverLevel.dimension().location().toString(),
+                    x = pos.x, y = pos.y, z = pos.z,
+                )
+                registry.releaseAt(location)
+            }
+        }
+        super.onRemove(state, level, pos, newState, isMoving)
     }
 
     // ------------------------------------------------------------------

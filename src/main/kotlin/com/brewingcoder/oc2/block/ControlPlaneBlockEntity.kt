@@ -1,8 +1,10 @@
 package com.brewingcoder.oc2.block
 
 import com.brewingcoder.oc2.OpenComputers2
+import com.brewingcoder.oc2.platform.control.ControlPlaneRegistry
 import com.brewingcoder.oc2.platform.vm.ControlPlaneDisk
 import com.brewingcoder.oc2.platform.vm.ControlPlaneVm
+import com.brewingcoder.oc2.storage.OC2ServerContext
 import net.minecraft.core.BlockPos
 import net.minecraft.core.HolderLookup
 import net.minecraft.nbt.CompoundTag
@@ -70,11 +72,7 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
     }
 
     private fun bootVm(serverLevel: ServerLevel): ControlPlaneVm {
-        val uuid = vmUuid ?: UUID.randomUUID().also {
-            vmUuid = it
-            setChanged()
-        }
-        val diskFile = resolveDiskFile(serverLevel, uuid)
+        val diskFile = resolveDiskFile(serverLevel)
         val v = ControlPlaneVm(
             diskFile = diskFile,
             diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
@@ -89,11 +87,44 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         return v
     }
 
-    private fun resolveDiskFile(serverLevel: ServerLevel, uuid: UUID): File {
+    /**
+     * Disk image lives under `<world>/oc2/vm-disks/`. Filename anchors to:
+     *   1. **Owner UUID** (preferred) — the player who placed the Control Plane,
+     *      looked up via [ControlPlaneRegistry] from this block's location. This
+     *      means the disk follows the player: break + replace at the same coords
+     *      reuses the same image, and a single player only ever has one disk.
+     *   2. **Per-BE UUID** (fallback) — for orphan blocks placed without an
+     *      owner (e.g. /setblock, dispenser, pre-registry worlds). Generated on
+     *      first tick, NBT-persisted at "vm_uuid".
+     *
+     * The registry is the single source of truth for ownership; the per-BE
+     * UUID exists only so non-owned VMs still get a stable disk path.
+     */
+    private fun resolveDiskFile(serverLevel: ServerLevel): File {
         val root = serverLevel.server.getWorldPath(LevelResource(OpenComputers2.ID))
         val dir = root.resolve("vm-disks").toFile()
         dir.mkdirs()
-        return File(dir, "$uuid.img")
+
+        val owner = lookupOwner(serverLevel)
+        val name = if (owner != null) {
+            "owner-$owner.img"
+        } else {
+            val fallback = vmUuid ?: UUID.randomUUID().also {
+                vmUuid = it
+                setChanged()
+            }
+            "be-$fallback.img"
+        }
+        return File(dir, name)
+    }
+
+    private fun lookupOwner(serverLevel: ServerLevel): UUID? {
+        val registry = runCatching { OC2ServerContext.get(serverLevel.server).controlPlanes }.getOrNull() ?: return null
+        val location = ControlPlaneRegistry.Location(
+            dimension = serverLevel.dimension().location().toString(),
+            x = blockPos.x, y = blockPos.y, z = blockPos.z,
+        )
+        return registry.ownerAt(location)
     }
 
     override fun setRemoved() {
