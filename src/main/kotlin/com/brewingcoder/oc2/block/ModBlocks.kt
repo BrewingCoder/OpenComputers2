@@ -52,4 +52,13 @@ object ModBlocks {
             .lightLevel { state -> if (state.getValue(WiFiExtenderBlock.ACTIVE)) 7 else 0 }
     )
     val WIFI_EXTENDER: WiFiExtenderBlock by WIFI_EXTENDER_HOLDER
+
+    val CONTROL_PLANE_HOLDER: DeferredBlock<ControlPlaneBlock> = REGISTRY.registerBlock(
+        "control_plane",
+        { props -> ControlPlaneBlock(props) },
+        BlockBehaviour.Properties.of()
+            .strength(3.5f)
+            .lightLevel { 8 }
+    )
+    val CONTROL_PLANE: ControlPlaneBlock by CONTROL_PLANE_HOLDER
 }

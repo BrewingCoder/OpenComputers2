@@ -42,6 +42,10 @@ object ModItems {
         REGISTRY.registerSimpleBlockItem(ModBlocks.WIFI_EXTENDER_HOLDER)
     val WIFI_EXTENDER: Item by WIFI_EXTENDER_HOLDER
 
+    val CONTROL_PLANE_HOLDER: DeferredItem<BlockItem> =
+        REGISTRY.registerSimpleBlockItem(ModBlocks.CONTROL_PLANE_HOLDER)
+    val CONTROL_PLANE: Item by CONTROL_PLANE_HOLDER
+
     /** Inventory part — right-click an Adapter face holding this to install. */
     val INVENTORY_PART_HOLDER: DeferredItem<PartItem> = REGISTRY.register("inventory_part") { ->
         PartItem(InventoryPart.TYPE, Item.Properties())

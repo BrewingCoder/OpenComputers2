@@ -72,6 +72,27 @@ neoForge {
             additionalRuntimeClasspathConfiguration.dependencies.add(
                 project.dependencies.create('org.mozilla:rhino:1.7.15')
             )
+            // Sedna isn't shipped by any other mod, so it has to be on the dev runtime
+            // classpath explicitly (shade alone only affects shadowJar). Same applies
+            // to its transitive deps — the POM doesn't declare them, so we add each.
+            additionalRuntimeClasspathConfiguration.dependencies.add(
+                project.dependencies.create('li.cil.sedna:sedna:1.1.0+105')
+            )
+            additionalRuntimeClasspathConfiguration.dependencies.add(
+                project.dependencies.create('org.ow2.asm:asm:9.7.1')
+            )
+            additionalRuntimeClasspathConfiguration.dependencies.add(
+                project.dependencies.create('org.ow2.asm:asm-commons:9.7.1')
+            )
+            additionalRuntimeClasspathConfiguration.dependencies.add(
+                project.dependencies.create('it.unimi.dsi:fastutil:8.5.6')
+            )
+            additionalRuntimeClasspathConfiguration.dependencies.add(
+                project.dependencies.create('li.cil.ceres:ceres:0.0.3+22')
+            )
+            // Sedna's R5CPUGenerator reflectively calls protected ClassLoader.defineClass.
+            // Without this open, Java 16+ throws InaccessibleObjectException on first VM tick.
+            jvmArguments.add '--add-opens=java.base/java.lang=ALL-UNNAMED'
             // Cobalt is intentionally omitted here — CC:Tweaked bundles its own copy
             // and putting a second cc.tweaked.cobalt module on the path causes a
             // ResolutionException. CC:T's bundled Cobalt is used at dev runtime; the
@@ -174,6 +195,17 @@ repositories {
         url = 'https://maven.blamejared.com'
         content { includeGroup "mezz.jei" }
     }
+    // fnuecke's public maven — hosts Sedna (the RV64 emulator powering Tier-2's
+    // Linux VM block). MIT, no auth required. The 1.x line is the last release
+    // on this maven; 2.x lives on GitHub Package Registry which would require
+    // every dev/CI to provision a personal access token, so we stay on 1.1.0+105
+    // until that calculus changes. Sedna is mature; our needs (RV64GC + supervisor
+    // + virtio + Linux boot) are all stable features in 1.1.x.
+    maven {
+        name = 'fnuecke (Sedna)'
+        url = 'https://maven.cil.li'
+        content { includeGroup "li.cil.sedna"; includeGroup "li.cil.ceres" }
+    }
 }
 
 dependencies {
@@ -208,6 +240,39 @@ dependencies {
     compileOnly 'org.mozilla:rhino:1.7.15'
     testRuntimeOnly 'org.mozilla:rhino:1.7.15'
 
+    // Sedna — RV64 RISC-V emulator powering the Tier-2 Control Plane Linux VM.
+    // Pure-JVM, MIT, no native binaries. No relocation needed — no other mod ships
+    // li.cil.sedna.* classes.
+    //   - `shade` → bundled into the production jar (along with its transitive deps)
+    //   - `compileOnly` → block/ControlPlane*.kt sees li.cil.sedna.* at compile time
+    //   - `testRuntimeOnly` → unit tests can exercise the VM directly
+    // Dev runs get Sedna via additionalRuntimeClasspath in the runs.configureEach
+    // block above (no other mod provides it transitively, unlike Cobalt via CC:T).
+    //
+    // The 1.1.0+105 POM on maven.cil.li doesn't declare its transitive deps, so we
+    // pin each one explicitly. Versions match Sedna's own build.gradle.kts at the
+    // tagged commit — diverging would risk binary-incompat against the JIT path.
+    // log4j-api is provided by MC at runtime; we still declare it for tests.
+    shade 'li.cil.sedna:sedna:1.1.0+105'
+    compileOnly 'li.cil.sedna:sedna:1.1.0+105'
+    testRuntimeOnly 'li.cil.sedna:sedna:1.1.0+105'
+    // Sedna transitives — must be on classpath at compile + runtime + test.
+    shade 'org.ow2.asm:asm:9.7.1'
+    shade 'org.ow2.asm:asm-commons:9.7.1'
+    shade 'it.unimi.dsi:fastutil:8.5.6'
+    shade 'li.cil.ceres:ceres:0.0.3+22'
+    compileOnly 'org.ow2.asm:asm:9.7.1'
+    compileOnly 'org.ow2.asm:asm-commons:9.7.1'
+    compileOnly 'it.unimi.dsi:fastutil:8.5.6'
+    compileOnly 'li.cil.ceres:ceres:0.0.3+22'
+    testRuntimeOnly 'org.ow2.asm:asm:9.7.1'
+    testRuntimeOnly 'org.ow2.asm:asm-commons:9.7.1'
+    testRuntimeOnly 'it.unimi.dsi:fastutil:8.5.6'
+    testRuntimeOnly 'li.cil.ceres:ceres:0.0.3+22'
+    testRuntimeOnly 'commons-io:commons-io:2.11.0'
+    testRuntimeOnly 'org.apache.commons:commons-lang3:3.12.0'
+    testRuntimeOnly 'org.apache.logging.log4j:log4j-api:2.15.0'
+
     // JEI — soft dependency. compileOnly for the @JeiPlugin handler; localRuntime so
     // the dev client gets JEI in-game (recipe browser + Move Items button) without
     // forcing JEI on production users. Mod boots fine with JEI absent.
@@ -237,6 +302,10 @@ tasks.named('test', Test) {
     testLogging {
         events 'passed', 'skipped', 'failed'
     }
+    // Sedna's R5CPUGenerator reflectively calls protected ClassLoader.defineClass to
+    // install its JIT-compiled CPU class. Java 16+ blocks that without an explicit
+    // open. (Production / dev-client paths get the same flag elsewhere.)
+    jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
 }
 
 // Mods.toml templating — expand ${...} placeholders in src/main/resources/META-INF/neoforge.mods.toml

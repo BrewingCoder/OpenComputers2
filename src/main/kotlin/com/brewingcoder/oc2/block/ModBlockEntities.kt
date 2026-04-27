@@ -41,4 +41,10 @@ object ModBlockEntities {
             .of(::WiFiExtenderBlockEntity, ModBlocks.WIFI_EXTENDER)
             .build(null)
     }
+
+    val CONTROL_PLANE = REGISTRY.register("control_plane") { ->
+        BlockEntityType.Builder
+            .of(::ControlPlaneBlockEntity, ModBlocks.CONTROL_PLANE)
+            .build(null)
+    }
 }
