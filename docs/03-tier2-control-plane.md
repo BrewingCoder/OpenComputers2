@@ -34,7 +34,7 @@ What's wired up today, vs what the rest of this doc describes as the target.
 | virtio chardev `/dev/oc2net` | ⏳ deferred | Needs both host bridge + guest kernel module. |
 | 9P host mount `/mnt/host` | ⏳ deferred | Sedna ships `VirtIOFileSystemDevice`; we just haven't wired it. |
 | `controlplaned` userspace + Cloud Card item | ⏳ deferred | Lives on the OS image, gated on the kernel + initramfs commit. |
-| Sedna VM serialization (chunk-unload pause/resume) | ⏳ deferred | Sedna is serializable; we just haven't wired the snapshot/restore path. |
+| Sedna VM serialization (chunk-unload pause/resume) | ✅ shipped | `platform/vm/SednaSerializerRegistration` registers Sedna's hand-rolled Ceres serializers (Java 21 needs `disableCodeGen=true` to skip the `Unsafe.defineAnonymousClass`-based path). `ControlPlaneVm.snapshot()` round-trips state via Ceres; BE writes to `<world>/oc2/vm-snapshots/<id>.snap` on chunk unload + power-off and restores on next boot. |
 
 ## The block
 

@@ -7,6 +7,7 @@ import com.brewingcoder.oc2.platform.Position
 import com.brewingcoder.oc2.platform.control.ControlPlaneRegistry
 import com.brewingcoder.oc2.platform.peripheral.ControlPlanePeripheral
 import com.brewingcoder.oc2.platform.vm.ControlPlaneDisk
+import com.brewingcoder.oc2.platform.vm.ControlPlaneSnapshotStore
 import com.brewingcoder.oc2.platform.vm.ControlPlaneVm
 import com.brewingcoder.oc2.storage.OC2ServerContext
 import net.minecraft.core.BlockPos
@@ -56,11 +57,9 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
     /**
      * Whether the VM should be ticking. Defaults to `true` so freshly placed
      * Control Planes boot immediately. Toggled via [togglePower]. Powering off
-     * closes the live VM (releasing RAM + disk FD); powering on lets the next
-     * [tick] lazy-boot a fresh VM that re-attaches the same disk image.
-     *
-     * RAM contents are NOT preserved across power cycles today — once we ship
-     * a Ceres-based snapshot, this becomes "suspend/resume" instead.
+     * snapshots and closes the live VM (releasing RAM + disk FD); powering on
+     * lets the next [tick] lazy-boot a fresh VM that restores from the
+     * snapshot (so RAM contents survive the power cycle — true suspend/resume).
      */
     private var powered: Boolean = true
 
@@ -143,6 +142,7 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         if (!powered) {
             // Drain any final UART output before closing so the status line
             // we'll print to chat reflects the last guest activity.
+            persistSnapshotIfRunning()
             vm?.close()
             vm = null
         }
@@ -194,18 +194,100 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
 
     private fun bootVm(serverLevel: ServerLevel): ControlPlaneVm {
         val diskFile = resolveDiskFile(serverLevel)
-        val v = ControlPlaneVm(
-            diskFile = diskFile,
-            diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
-        )
+        val identity = vmIdentity(serverLevel)
+        val store = snapshotStore(serverLevel)
+        val snapshot = runCatching { store.read(identity) }.getOrElse { ex ->
+            // Stale or partial snapshot file shouldn't brick the BE — log and
+            // fall through to a fresh boot. The bad file stays on disk so an
+            // op can investigate; admins can wipe it manually.
+            OpenComputers2.LOGGER.warn(
+                "control plane @ {} snapshot read failed ({}); booting fresh",
+                blockPos,
+                ex.message,
+            )
+            null
+        }
+        val v = try {
+            ControlPlaneVm(
+                diskFile = diskFile,
+                diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
+                snapshot = snapshot,
+            )
+        } catch (ex: Exception) {
+            // Restore failed (corrupt snapshot, format drift across mod versions).
+            // Same policy as the read failure: log, leave the bad file alone for
+            // forensics, fall through to a fresh boot.
+            if (snapshot != null) {
+                OpenComputers2.LOGGER.warn(
+                    "control plane @ {} snapshot restore failed ({}); booting fresh",
+                    blockPos,
+                    ex.message,
+                )
+                ControlPlaneVm(
+                    diskFile = diskFile,
+                    diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
+                )
+            } else {
+                throw ex
+            }
+        }
         vm = v
+        val origin = if (snapshot != null) "restored" else "fresh"
         OpenComputers2.LOGGER.info(
-            "control plane @ {} VM booted: {} (disk={})",
+            "control plane @ {} VM booted ({}): {} (disk={})",
             blockPos,
+            origin,
             v.describe(),
             diskFile.toPath(),
         )
         return v
+    }
+
+    /**
+     * If a VM is running, capture its state into the snapshot store. Called
+     * from [setRemoved] (chunk unload / block break) and [togglePower] (off).
+     * Best-effort — a failed snapshot must not throw out of those paths,
+     * because an unloading chunk can't recover from an exception there.
+     */
+    private fun persistSnapshotIfRunning() {
+        val v = vm ?: return
+        val serverLevel = level as? ServerLevel ?: return
+        try {
+            val bytes = v.snapshot()
+            val identity = vmIdentity(serverLevel)
+            snapshotStore(serverLevel).write(identity, bytes)
+        } catch (ex: Exception) {
+            OpenComputers2.LOGGER.warn(
+                "control plane @ {} snapshot write failed: {}",
+                blockPos,
+                ex.message,
+            )
+        }
+    }
+
+    private fun snapshotStore(serverLevel: ServerLevel): ControlPlaneSnapshotStore {
+        val root = serverLevel.server.getWorldPath(LevelResource(OpenComputers2.ID))
+        return ControlPlaneSnapshotStore(root.resolve("vm-snapshots").toFile())
+    }
+
+    /**
+     * Identity used as the snapshot filename — owner UUID if registered,
+     * otherwise the per-BE fallback UUID. Mirrors [resolveDiskFile]'s naming
+     * so a Control Plane's disk image and snapshot share the same prefix.
+     * Keep these two in sync: an owner-keyed disk paired with a be-keyed
+     * snapshot would silently desync state from RAM.
+     */
+    private fun vmIdentity(serverLevel: ServerLevel): String {
+        val owner = lookupOwner(serverLevel)
+        return if (owner != null) {
+            "owner-$owner"
+        } else {
+            val fallback = vmUuid ?: UUID.randomUUID().also {
+                vmUuid = it
+                setChanged()
+            }
+            "be-$fallback"
+        }
     }
 
     /**
@@ -225,18 +307,8 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         val root = serverLevel.server.getWorldPath(LevelResource(OpenComputers2.ID))
         val dir = root.resolve("vm-disks").toFile()
         dir.mkdirs()
-
-        val owner = lookupOwner(serverLevel)
-        val name = if (owner != null) {
-            "owner-$owner.img"
-        } else {
-            val fallback = vmUuid ?: UUID.randomUUID().also {
-                vmUuid = it
-                setChanged()
-            }
-            "be-$fallback.img"
-        }
-        return File(dir, name)
+        // Share identity with the snapshot store so disk + snapshot stay paired.
+        return File(dir, "${vmIdentity(serverLevel)}.img")
     }
 
     private fun lookupOwner(serverLevel: ServerLevel): UUID? {
@@ -249,11 +321,13 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
     }
 
     override fun setRemoved() {
-        // BE is being unloaded (chunk unload) or destroyed (block break). Either
-        // way the VM should release its file descriptor — chunk reload will boot
-        // a fresh VM next tick. Disk file persists; gardening orphans is a
-        // separate (manual) gesture today.
+        // BE is being unloaded (chunk unload) or destroyed (block break).
+        // Snapshot before close so chunk reload restores RAM state — without
+        // this, every chunk unload would silently reset the running guest.
+        // Disk file persists either way; gardening orphans is a separate
+        // (manual) gesture today.
         if (registryShouldTrack) ChannelRegistry.unregister(this)
+        if (powered) persistSnapshotIfRunning()
         vm?.close()
         vm = null
         super.setRemoved()
