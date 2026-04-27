@@ -15,6 +15,26 @@ This split is deliberate and matches the platform-vs-software rule
 layer that runs on top of the *platform* layer. Just like Kubernetes runs on
 top of Linux, our orchestrator runs on top of the Sedna-emulated Linux box.
 
+## Shipping status (2026-04-27)
+
+What's wired up today, vs what the rest of this doc describes as the target.
+
+| Piece | Status | Notes |
+|---|---|---|
+| Control Plane block (1×2 vertical, places, ticks) | ✅ shipped | `block/ControlPlaneBlock`, `ControlPlaneBlockEntity` |
+| Sedna `R5Board` + 64 MB RAM | ✅ shipped | `platform/vm/ControlPlaneVm` |
+| Per-BE disk image at `<world>/oc2/vm-disks/<be-uuid>.img` (sparse 256 MB, virtio-blk) | ✅ shipped | `platform/vm/ControlPlaneDisk` |
+| UART16550A standard-output device + host capture ring | ✅ shipped | `platform/vm/ConsoleCapture`. Becomes Linux's `console=ttyS0`. |
+| Cycle counter NBT persistence | ✅ shipped | Persists every ~16M cycles |
+| **Disk image keyed on per-BE UUID** | ⚠️ interim | Doc target is per-player UUID — single-player works either way; multiplayer + singleton-per-player enforcement lands with the registry. |
+| `OC2ControlPlaneRegistry` + singleton-per-player | ⏳ deferred | Needed before MP. |
+| Linux kernel + initramfs default image | ⏳ deferred | Needs cross-compiled vmlinux + busybox initramfs as mod resources. With no firmware loaded the CPU spins on illegal-instruction traps — that's the proof-of-life signal that the cycle counter ticks. |
+| virtio-console for in-world terminal screen | ⏳ deferred | UART covers boot console; virtio-console + terminal screen ship together. |
+| virtio chardev `/dev/oc2net` | ⏳ deferred | Needs both host bridge + guest kernel module. |
+| 9P host mount `/mnt/host` | ⏳ deferred | Sedna ships `VirtIOFileSystemDevice`; we just haven't wired it. |
+| `controlplaned` userspace + Cloud Card item | ⏳ deferred | Lives on the OS image, gated on the kernel + initramfs commit. |
+| Sedna VM serialization (chunk-unload pause/resume) | ⏳ deferred | Sedna is serializable; we just haven't wired the snapshot/restore path. |
+
 ## The block
 
 - **Single block, occupies 1×2 vertical** (lower BE owns state; upper slot

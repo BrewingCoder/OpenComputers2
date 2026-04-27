@@ -255,6 +255,7 @@ dependencies {
     // log4j-api is provided by MC at runtime; we still declare it for tests.
     shade 'li.cil.sedna:sedna:1.1.0+105'
     compileOnly 'li.cil.sedna:sedna:1.1.0+105'
+    testCompileOnly 'li.cil.sedna:sedna:1.1.0+105'
     testRuntimeOnly 'li.cil.sedna:sedna:1.1.0+105'
     // Sedna transitives — must be on classpath at compile + runtime + test.
     shade 'org.ow2.asm:asm:9.7.1'

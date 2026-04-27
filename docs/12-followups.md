@@ -282,3 +282,68 @@ Other adapters (CC, ID, NeoForge caps) deferred.
   shipped today (CobaltLuaHost `method(self) {...}` helper) needs explicit
   unit tests for both call styles to lock the contract.
 - **Bake out of render() pass**: see MSDF section above.
+
+---
+
+## Tier-2 Control Plane — incremental delivery
+
+**Shipped:**
+- 2026-04-26: docs/03 design (Linux VM block; k8s = userspace)
+- 2026-04-26: Sedna scaffolding — `R5Board` + 64 MB RAM ticking on the BE
+- 2026-04-27: Disk image plumbing — sparse 256 MB virtio-blk per BE,
+  UART16550A standard-output + host-side capture ring,
+  `platform/vm/{ControlPlaneDisk,ConsoleCapture,ControlPlaneVm}`. 14 new tests.
+
+### Next — kernel + initramfs (no firmware = no boot)
+
+The plumbing is there but the VM has nothing to execute. Without firmware
+the CPU spins on illegal-instruction traps; the cycle counter still ticks,
+which is the proof-of-life signal but not a usable computer. To make the
+console produce real output and the disk hold a real filesystem we need:
+
+- A **RV64GC Linux kernel** (vmlinux, ~5–10 MB) configured with virtio-blk,
+  virtio-console, ext4, and minimal drivers. Buildroot or Yocto are the
+  obvious cross-compile environments.
+- A **tiny initramfs** (cpio.gz, ~2–5 MB) with busybox-static `/init`,
+  fsck, mke2fs, and a small login shell. First-boot script formats the
+  blank virtio-blk disk to ext4 if it isn't already.
+- **Resource bundling**: ship both binaries under
+  `src/main/resources/assets/oc2/vm/{vmlinux,initramfs.cpio.gz}`.
+- **Loader path**: write the kernel into the `R5Board` flash device at
+  `FLASH_ADDRESS` (or copy directly into RAM at `ramBase`) and set boot
+  args via `R5Board.setBootArguments(...)` (e.g. `console=ttyS0
+  root=/dev/vda rw`).
+- **Licensing**: kernel is GPL-2; we'd ship config + source pointers
+  alongside the binary to comply. Busybox same dance. Document in the
+  repo so redistribution stays clean.
+
+Substantial engineering (cross-compile toolchain, build scripts, CI to
+keep binaries reproducible) — intentionally split from the plumbing
+commits so each lands clean.
+
+### Then — virtio chardev (`/dev/oc2net`) + Cloud Card
+
+With a booting kernel that can talk to virtio devices, next is the OC2
+channel bridge. Sedna doesn't ship a virtio-chardev (only console/block/
+net/9p), so we'd subclass `AbstractVirtIODevice` ourselves. Then write
+`oc2net.ko` that talks to it, and the host-side `BridgeDispatcher` that
+routes packets between the VM and the OC2 channel network.
+
+### Then — 9P host mount
+
+`VirtIOFileSystemDevice` + `HostFileSystem` are already in Sedna. Wire
+both in and decide where on the host filesystem the `/mnt/host` shared
+dirs live (probably `<world>/oc2/host-share/`).
+
+### Then — singleton-per-player + Cloud Card item
+
+Once the bridge works, the `OC2ControlPlaneRegistry` becomes load-bearing
+(rejects placement if the player already owns one). Cloud Card is a new
+Tier-1 part item that opts a Computer into being routed by the VM.
+
+### Then — chunk-unload pause/resume
+
+Sedna is fully serializable. Snapshot the `R5Board` to NBT (or a
+side-file under `<world>/oc2/vm-snapshots/<be-uuid>.bin`) on chunk
+unload and restore on load. Today the VM is rebuilt from scratch on
+each chunk reload, which is fine while there's no boot.
