@@ -40,10 +40,10 @@ See [`01-platform-vs-software.md`](01-platform-vs-software.md) for full reasonin
 See [`02-tier1-local.md`](02-tier1-local.md).
 
 ### Tier 2 — global control plane
-- **Control Plane** (multi-block, singleton per user per world)
-- Tier-1 computers opt in via a **Cloud Card** peripheral
-- Service discovery + RPC routing + pub/sub + KV + SQL storage
-- k8s-style: services, replicas, manifests, heartbeats, deployments
+- **Control Plane** — a Linux VM block (Sedna RISC-V emulator), 1×2 vertical, singleton per user per world
+- Real Linux box: kernel + busybox/musl userland, persistent disk image per player
+- Tier-1 computers opt in via a **Cloud Card** peripheral that exposes them to the VM as `/dev/oc2net` endpoints
+- The k8s-style service mesh (services, replicas, manifests, heartbeats, RPC, pub/sub, KV, SQL) runs as **userspace software** (`controlplaned`) on the default disk image, not as a platform abstraction
 - Channel match only — no range cap (that's the Tier-2 reward)
 
 See [`03-tier2-control-plane.md`](03-tier2-control-plane.md).
