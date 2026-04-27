@@ -27,4 +27,11 @@ interface Mount {
     fun list(path: String): List<String>
     fun size(path: String): Long
     fun openForRead(path: String): SeekableByteChannel
+
+    /**
+     * Epoch-millis of the last modification to [path], or `-1L` when unknown.
+     * In-JAR resource mounts and in-memory mounts default to unknown; only the
+     * disk-backed [com.brewingcoder.oc2.storage.WorldFileMount] currently reports a real time.
+     */
+    fun lastModified(path: String): Long = -1L
 }

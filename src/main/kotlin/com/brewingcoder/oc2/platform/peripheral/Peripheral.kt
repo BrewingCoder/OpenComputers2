@@ -18,6 +18,23 @@ interface Peripheral {
 
     /** World block position of this peripheral. Exposed to scripts as `getLocation()`. */
     val location: Position
+
+    /**
+     * User-assigned name from the part config GUI (or null when the peripheral has no
+     * name surface — e.g. monitors, where identity is the block group itself). Used by
+     * `peripheral.find(kind, name)` to disambiguate multiple peripherals of the same
+     * kind on a channel. Subtypes that always carry a name override with `String`.
+     */
+    val name: String? get() = null
+
+    /**
+     * Free-form text the player typed into the part config GUI's "data" field.
+     * Generic by design: scripts decide the grammar. The OC2 codebase ships
+     * `examples/stock.lua` as a demo (Isy-style stocking rules), but the field
+     * is not parsed anywhere in the engine — it's just a string the part stores
+     * and the peripheral surfaces. Empty when nothing was set, never null.
+     */
+    val data: String get() = ""
 }
 
 /**

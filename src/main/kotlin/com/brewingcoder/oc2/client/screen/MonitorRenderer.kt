@@ -155,7 +155,14 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
             com.mojang.blaze3d.systems.RenderSystem.enableBlend()
             com.mojang.blaze3d.systems.RenderSystem.defaultBlendFunc()
             com.mojang.blaze3d.systems.RenderSystem.disableCull()
-            com.mojang.blaze3d.systems.RenderSystem.disableDepthTest()
+            // Explicitly enable depth TEST (world geometry occludes our content)
+            // and disable depth WRITE (our internal passes still layer by draw
+            // order — the shipped contract). depthMask alone is not enough;
+            // if some upstream pass left depth-test disabled, our content would
+            // bleed through any block placed in front of the face.
+            com.mojang.blaze3d.systems.RenderSystem.enableDepthTest()
+            com.mojang.blaze3d.systems.RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL)
+            com.mojang.blaze3d.systems.RenderSystem.depthMask(false)
             val bgBuilder = com.mojang.blaze3d.vertex.Tesselator.getInstance()
                 .begin(
                     com.mojang.blaze3d.vertex.VertexFormat.Mode.QUADS,
@@ -183,7 +190,7 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
             }
             val bgMesh = bgBuilder.build()
             if (bgMesh != null) com.mojang.blaze3d.vertex.BufferUploader.drawWithShader(bgMesh)
-            com.mojang.blaze3d.systems.RenderSystem.enableDepthTest()
+            com.mojang.blaze3d.systems.RenderSystem.depthMask(true)
             com.mojang.blaze3d.systems.RenderSystem.enableCull()
             if (com.brewingcoder.oc2.client.screen.MonitorFrameCounter.current() % 60 == 0L) {
                 com.brewingcoder.oc2.OpenComputers2.LOGGER.info(
@@ -204,7 +211,9 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
                 RenderSystem.enableBlend()
                 RenderSystem.defaultBlendFunc()
                 RenderSystem.disableCull()
-                RenderSystem.disableDepthTest()
+                RenderSystem.enableDepthTest()
+                RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL)
+                RenderSystem.depthMask(false)
                 val builder = Tesselator.getInstance()
                     .begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR)
                 builder.addVertex(matrix, 0f,        surfaceH, 0f).setUv(0f, 1f).setColor(255, 255, 255, 255)
@@ -212,7 +221,7 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
                 builder.addVertex(matrix, surfaceW,  0f,       0f).setUv(1f, 0f).setColor(255, 255, 255, 255)
                 builder.addVertex(matrix, 0f,        0f,       0f).setUv(0f, 0f).setColor(255, 255, 255, 255)
                 BufferUploader.drawWithShader(builder.buildOrThrow())
-                RenderSystem.enableDepthTest()
+                RenderSystem.depthMask(true)
                 RenderSystem.enableCull()
             }
         }
@@ -367,7 +376,9 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         RenderSystem.enableBlend()
         RenderSystem.defaultBlendFunc()
         RenderSystem.disableCull()
-        RenderSystem.disableDepthTest()
+        RenderSystem.enableDepthTest()
+        RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL)
+        RenderSystem.depthMask(false)
 
         val builder = Tesselator.getInstance()
             .begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR)
@@ -411,7 +422,7 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
 
         val mesh = builder.build()
         if (mesh != null) BufferUploader.drawWithShader(mesh)
-        RenderSystem.enableDepthTest()
+        RenderSystem.depthMask(true)
         RenderSystem.enableCull()
     }
 
@@ -442,7 +453,9 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         RenderSystem.enableBlend()
         RenderSystem.defaultBlendFunc()
         RenderSystem.disableCull()
-        RenderSystem.disableDepthTest()
+        RenderSystem.enableDepthTest()
+        RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL)
+        RenderSystem.depthMask(false)
         RenderSystem.setShader { GameRenderer.getPositionTexColorShader() }
 
         // Group by atlas so a single draw call handles each atlas binding.
@@ -486,7 +499,7 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
             if (mesh != null) BufferUploader.drawWithShader(mesh)
         }
 
-        RenderSystem.enableDepthTest()
+        RenderSystem.depthMask(true)
         RenderSystem.enableCull()
     }
 
@@ -530,7 +543,9 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         com.mojang.blaze3d.systems.RenderSystem.enableBlend()
         com.mojang.blaze3d.systems.RenderSystem.defaultBlendFunc()
         com.mojang.blaze3d.systems.RenderSystem.disableCull()
-        com.mojang.blaze3d.systems.RenderSystem.disableDepthTest()
+        com.mojang.blaze3d.systems.RenderSystem.enableDepthTest()
+        com.mojang.blaze3d.systems.RenderSystem.depthFunc(org.lwjgl.opengl.GL11.GL_LEQUAL)
+        com.mojang.blaze3d.systems.RenderSystem.depthMask(false)
 
         val builder = com.mojang.blaze3d.vertex.Tesselator.getInstance()
             .begin(
@@ -574,7 +589,7 @@ class MonitorRenderer(@Suppress("UNUSED_PARAMETER") ctx: BlockEntityRendererProv
         if (mesh != null) {
             com.mojang.blaze3d.vertex.BufferUploader.drawWithShader(mesh)
         }
-        com.mojang.blaze3d.systems.RenderSystem.enableDepthTest()
+        com.mojang.blaze3d.systems.RenderSystem.depthMask(true)
         com.mojang.blaze3d.systems.RenderSystem.enableCull()
 
         if (com.brewingcoder.oc2.client.screen.MonitorFrameCounter.current() % 60 == 0L) {

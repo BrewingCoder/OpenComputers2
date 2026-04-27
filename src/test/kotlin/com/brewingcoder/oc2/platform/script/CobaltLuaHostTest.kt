@@ -341,4 +341,31 @@ class CobaltLuaHostTest {
         mon.log shouldBe listOf("write(hello)", "setCursorPos(3,5)", "clear()")
         out.lines shouldBe listOf("20\t10")
     }
+
+    @Test
+    fun `script args are forwarded as varargs and on arg table`() {
+        val out = CapturingOut()
+        val r = host().eval(
+            source = "local a = {...}; print(#a, a[1], a[2], arg[1], arg[2])",
+            chunkName = "args.lua",
+            env = FakeEnv(mount(), "", out),
+            scriptArgs = listOf("minecraft:raw_iron", "64"),
+        )
+        r.ok shouldBe true
+        out.lines shouldBe listOf("2\tminecraft:raw_iron\t64\tminecraft:raw_iron\t64")
+    }
+
+    @Test
+    fun `empty script args produces empty varargs and no arg global`() {
+        val out = CapturingOut()
+        val r = host().eval(
+            source = "local a = {...}; print(#a, type(arg))",
+            chunkName = "args.lua",
+            env = FakeEnv(mount(), "", out),
+            scriptArgs = emptyList(),
+        )
+        r.ok shouldBe true
+        // No args → `arg` global stays nil so existing scripts that don't use args see no surprise.
+        out.lines shouldBe listOf("0\tnil")
+    }
 }

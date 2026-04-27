@@ -4,7 +4,9 @@ import com.brewingcoder.oc2.block.ModBlockEntities
 import com.brewingcoder.oc2.block.ModBlocks
 import com.brewingcoder.oc2.block.parts.ModParts
 import com.brewingcoder.oc2.client.OC2ClientConfig
+import com.brewingcoder.oc2.item.ModDataComponents
 import com.brewingcoder.oc2.item.ModItems
+import com.brewingcoder.oc2.item.ModMenus
 import com.brewingcoder.oc2.item.ModTabs
 import net.neoforged.bus.api.SubscribeEvent
 import net.neoforged.fml.ModList
@@ -44,7 +46,10 @@ object OpenComputers2 {
 
         ModBlocks.REGISTRY.register(MOD_BUS)
         ModBlockEntities.REGISTRY.register(MOD_BUS)
+        // Data components must register before items so item ctors can reference them.
+        ModDataComponents.REGISTRY.register(MOD_BUS)
         ModItems.REGISTRY.register(MOD_BUS)
+        ModMenus.REGISTRY.register(MOD_BUS)
         ModTabs.REGISTRY.register(MOD_BUS)
 
         // Part type registry — lookups happen during BE NBT load, must be ready

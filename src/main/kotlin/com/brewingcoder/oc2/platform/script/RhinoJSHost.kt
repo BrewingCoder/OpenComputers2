@@ -3,11 +3,16 @@ package com.brewingcoder.oc2.platform.script
 import com.brewingcoder.oc2.platform.os.ShellOutput
 import com.brewingcoder.oc2.platform.peripheral.BlockPeripheral
 import com.brewingcoder.oc2.platform.peripheral.BridgePeripheral
+import com.brewingcoder.oc2.platform.peripheral.CrafterPeripheral
+import com.brewingcoder.oc2.platform.peripheral.MachineCrafterPeripheral
 import com.brewingcoder.oc2.platform.peripheral.EnergyPeripheral
 import com.brewingcoder.oc2.platform.peripheral.FluidPeripheral
 import com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral
 import com.brewingcoder.oc2.platform.peripheral.MonitorPeripheral
 import com.brewingcoder.oc2.platform.peripheral.RedstonePeripheral
+import com.brewingcoder.oc2.platform.recipes.InventoryApi
+import com.brewingcoder.oc2.platform.recipes.RecipeApi
+import com.brewingcoder.oc2.platform.recipes.RecipeCrafter
 import com.brewingcoder.oc2.platform.storage.StorageException
 import com.brewingcoder.oc2.platform.storage.WritableMount
 import org.mozilla.javascript.BaseFunction
@@ -47,7 +52,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class RhinoJSHost : ScriptHost {
 
-    override fun eval(source: String, chunkName: String, env: ScriptEnv): ScriptResult {
+    override fun eval(source: String, chunkName: String, env: ScriptEnv, scriptArgs: List<String>): ScriptResult {
         val cx = Context.enter()
         return try {
             cx.optimizationLevel = -1  // interpreter only — see class doc
@@ -56,8 +61,17 @@ class RhinoJSHost : ScriptHost {
             ScriptableObject.putProperty(scope, "print", makePrintFunction(env.out, scope))
             ScriptableObject.putProperty(scope, "fs", makeFsObject(env.mount, env.cwd, scope))
             ScriptableObject.putProperty(scope, "peripheral", makePeripheralObject(env, scope))
+            ScriptableObject.putProperty(scope, "inventory", makeInventoryObject(env, scope))
+            ScriptableObject.putProperty(scope, "recipes", makeRecipesFunction(env, scope))
             ScriptableObject.putProperty(scope, "colors", makeColorsObject())
             ScriptableObject.putProperty(scope, "network", makeNetworkObject(env, scope))
+            // Forward CLI args as the global `args` array — `args[0]`, `args[1]`, ...
+            // Always defined (empty array if no args) so `args.length` is safe.
+            run {
+                val arr = cx.newArray(scope, scriptArgs.size)
+                for ((i, s) in scriptArgs.withIndex()) arr.put(i, arr, s)
+                ScriptableObject.putProperty(scope, "args", arr)
+            }
             ScriptableObject.putProperty(scope, "sleep", object : BaseFunction(scope, ScriptableObject.getFunctionPrototype(scope)) {
                 override fun call(cx2: Context, scope2: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any {
                     val secs = (args.getOrNull(0) as? Number)?.toDouble() ?: 0.0
@@ -106,7 +120,12 @@ class RhinoJSHost : ScriptHost {
         val obj = NativeObject()
         defineFsMethod(obj, "find", parent, 1) { args ->
             val kind = asString(args, 0)
-            val p = env.findPeripheral(kind) ?: return@defineFsMethod null
+            val name = if (args.size >= 2 && args[1] != null && args[1] !== Undefined.instance) asString(args, 1) else null
+            val p = if (name != null) {
+                env.listPeripherals(kind).firstOrNull { it.name == name }
+            } else {
+                env.findPeripheral(kind)
+            } ?: return@defineFsMethod null
             wrapAnyPeripheral(p, parent)
         }
         defineFsMethod(obj, "list", parent, 1) { args ->
@@ -126,6 +145,8 @@ class RhinoJSHost : ScriptHost {
         val obj = when (p) {
             is MonitorPeripheral -> wrapMonitor(p, parent)
             is InventoryPeripheral -> wrapInventory(p, parent)
+            is CrafterPeripheral -> wrapCrafter(p, parent)
+            is MachineCrafterPeripheral -> wrapMachineCrafter(p, parent)
             is RedstonePeripheral -> wrapRedstone(p, parent)
             is FluidPeripheral -> wrapFluid(p, parent)
             is EnergyPeripheral -> wrapEnergy(p, parent)
@@ -142,6 +163,10 @@ class RhinoJSHost : ScriptHost {
             ScriptableObject.putProperty(result, "z", loc.z)
             result
         }
+        // Stamp `data` — the free-form user text from the part config GUI.
+        // Scripts read it as `peripheral.data`. Snapshot at wrap time; scripts
+        // re-fetch via `peripheral.find()` to pick up live edits.
+        ScriptableObject.putProperty(obj, "data", p.data)
         return obj
     }
 
@@ -357,8 +382,210 @@ class RhinoJSHost : ScriptHost {
         return o
     }
 
+    /**
+     * JS counterpart to [CobaltLuaHost.wrapCrafter]. Same surface — size/list/craft.
+     * The `source` argument to craft() must be an inventory peripheral object
+     * produced by `peripheral.find` / `inventory.list`; resolved via [invHandles].
+     */
+    private fun wrapCrafter(c: CrafterPeripheral, parent: Scriptable): ScriptableObject {
+        val obj = NativeObject()
+        ScriptableObject.putProperty(obj, "kind", c.kind)
+        ScriptableObject.putProperty(obj, "name", c.name)
+        defineFsMethod(obj, "size", parent, 0) { _ -> c.size() }
+        defineFsMethod(obj, "list", parent, 0) { _ ->
+            val list = c.list()
+            val arr = cx().newArray(parent, list.size)
+            for ((i, snap) in list.withIndex()) {
+                if (snap == null) {
+                    arr.put(i, arr, null)
+                } else {
+                    val o = NativeObject()
+                    ScriptableObject.putProperty(o, "slot", snap.slot)
+                    ScriptableObject.putProperty(o, "output", snap.output)
+                    ScriptableObject.putProperty(o, "outputCount", snap.outputCount)
+                    arr.put(i, arr, o)
+                }
+            }
+            arr
+        }
+        defineFsMethod(obj, "craft", parent, 3) { args ->
+            val slot = (args.getOrNull(0) as? Number)?.toInt() ?: 0
+            val count = (args.getOrNull(1) as? Number)?.toInt() ?: 1
+            val sourceObj = args.getOrNull(2) as? ScriptableObject
+            val source = sourceObj?.let { invHandles[it] }
+                ?: throw IllegalArgumentException("crafter.craft: source must be an inventory peripheral handle")
+            c.craft(slot, count, source)
+        }
+        defineFsMethod(obj, "adjacentBlock", parent, 0) { _ -> c.adjacentBlock() }
+        return obj
+    }
+
+    /**
+     * JS counterpart to [CobaltLuaHost.wrapMachineCrafter]. Same surface — size/list/craft —
+     * but craft() takes an optional 4th arg `fluidSource` (a fluid peripheral handle)
+     * for cards whose recipe stamps a fluid input.
+     */
+    private fun wrapMachineCrafter(c: MachineCrafterPeripheral, parent: Scriptable): ScriptableObject {
+        val obj = NativeObject()
+        ScriptableObject.putProperty(obj, "kind", c.kind)
+        ScriptableObject.putProperty(obj, "name", c.name)
+        defineFsMethod(obj, "size", parent, 0) { _ -> c.size() }
+        defineFsMethod(obj, "list", parent, 0) { _ ->
+            val list = c.list()
+            val arr = cx().newArray(parent, list.size)
+            for ((i, snap) in list.withIndex()) {
+                if (snap == null) {
+                    arr.put(i, arr, null)
+                } else {
+                    val o = NativeObject()
+                    ScriptableObject.putProperty(o, "slot", snap.slot)
+                    ScriptableObject.putProperty(o, "output", snap.output)
+                    ScriptableObject.putProperty(o, "outputCount", snap.outputCount)
+                    ScriptableObject.putProperty(o, "fluidIn", snap.fluidIn)
+                    ScriptableObject.putProperty(o, "fluidInMb", snap.fluidInMb)
+                    ScriptableObject.putProperty(o, "blocking", snap.blocking)
+                    arr.put(i, arr, o)
+                }
+            }
+            arr
+        }
+        defineFsMethod(obj, "craft", parent, 4) { args ->
+            val slot = (args.getOrNull(0) as? Number)?.toInt() ?: 0
+            val count = (args.getOrNull(1) as? Number)?.toInt() ?: 1
+            val sourceObj = args.getOrNull(2) as? ScriptableObject
+            val source = sourceObj?.let { invHandles[it] }
+                ?: throw IllegalArgumentException("machine_crafter.craft: source must be an inventory peripheral handle")
+            val fluidArg = args.getOrNull(3) as? ScriptableObject
+            val fluidSource = fluidArg?.let { fluidHandles[it] }
+            c.craft(slot, count, source, fluidSource)
+        }
+        defineFsMethod(obj, "adjacentBlock", parent, 0) { _ -> c.adjacentBlock() }
+        return obj
+    }
+
     /** Per-eval weak map; same rationale as [CobaltLuaHost.invHandles]. */
     private val invHandles: java.util.WeakHashMap<ScriptableObject, InventoryPeripheral> = java.util.WeakHashMap()
+
+    /**
+     * Build the `inventory` JS object — thin projection of [InventoryApi].
+     *
+     *   `inventory.list()`                          → array of inventory handles
+     *   `inventory.find([name])`                    → handle or null
+     *   `inventory.get(id, count, target [, from])` → moved
+     *   `inventory.drain(machine [, id [, to]])`    → moved
+     *   `inventory.put(id, count, source, target)`  → moved
+     */
+    private fun makeInventoryObject(env: ScriptEnv, parent: Scriptable): ScriptableObject {
+        val api = InventoryApi(env)
+        val obj = NativeObject()
+        defineFsMethod(obj, "list", parent, 0) { _ ->
+            val list = api.list()
+            val arr = cx().newArray(parent, list.size)
+            for ((i, p) in list.withIndex()) {
+                arr.put(i, arr, wrapAnyPeripheral(p, parent))
+            }
+            arr
+        }
+        defineFsMethod(obj, "find", parent, 1) { args ->
+            val name = if (args.isNotEmpty() && args[0] != null && args[0] !== Undefined.instance) asString(args, 0) else null
+            val p = api.find(name) ?: return@defineFsMethod null
+            wrapAnyPeripheral(p, parent)
+        }
+        defineFsMethod(obj, "get", parent, 4) { args ->
+            val itemId = asString(args, 0)
+            val count = (args.getOrNull(1) as? Number)?.toInt() ?: 0
+            val target = (args.getOrNull(2) as? ScriptableObject)?.let { invHandles[it] }
+                ?: return@defineFsMethod 0
+            // `from` undefined (or missing) → use the API's default ranking; only a present array overrides.
+            val from = readInventoryArray(args.getOrNull(3))
+            api.get(itemId, count, target, from)
+        }
+        defineFsMethod(obj, "drain", parent, 3) { args ->
+            val machine = (args.getOrNull(0) as? ScriptableObject)?.let { invHandles[it] }
+                ?: return@defineFsMethod 0
+            val itemId = if (args.size >= 2 && args[1] != null && args[1] !== Undefined.instance) asString(args, 1) else null
+            val to = readInventoryArray(args.getOrNull(2))
+            api.drain(machine, itemId, to)
+        }
+        defineFsMethod(obj, "put", parent, 4) { args ->
+            val itemId = asString(args, 0)
+            val count = (args.getOrNull(1) as? Number)?.toInt() ?: 0
+            val source = (args.getOrNull(2) as? ScriptableObject)?.let { invHandles[it] }
+                ?: return@defineFsMethod 0
+            val target = (args.getOrNull(3) as? ScriptableObject)?.let { invHandles[it] }
+                ?: return@defineFsMethod 0
+            api.put(itemId, count, source, target)
+        }
+        return obj
+    }
+
+    /** Read a JS array of inventory handles. Null = unspecified (use defaults); empty list = empty list. */
+    private fun readInventoryArray(v: Any?): List<InventoryPeripheral>? {
+        if (v == null || v === Undefined.instance) return null
+        val arr = v as? NativeArray ?: return null
+        val out = mutableListOf<InventoryPeripheral>()
+        for (i in 0 until arr.length) {
+            val entry = arr.get(i.toInt(), arr) as? ScriptableObject ?: return null
+            val inv = invHandles[entry] ?: return null
+            out.add(inv)
+        }
+        return out
+    }
+
+    /**
+     * Build `recipes` as a callable function-object:
+     *   - `recipes("minecraft:iron_ingot")` (or `recipes.query(id)`) — query bridge
+     *     producers/consumers/inputs/outputs (existing behavior).
+     *   - `recipes.craft(itemId [, count])` — auto-discovery craft: walks installed
+     *     `machine_crafter` / `crafter` peripherals, finds the card stamping [itemId],
+     *     auto-sources ingredients, returns the expected number of items produced.
+     *
+     * The function-object form preserves backward compatibility (`recipes(id)`)
+     * while adding `.craft` / `.query` namespaced methods on the same handle.
+     */
+    private fun makeRecipesFunction(env: ScriptEnv, parent: Scriptable): BaseFunction {
+        val runQuery: (Context, String) -> Any = { cx, itemId ->
+            val q = RecipeApi(env).query(itemId)
+            val obj = NativeObject()
+            ScriptableObject.putProperty(obj, "itemId", itemId)
+            run {
+                val arr = cx.newArray(parent, q.producers.size)
+                for ((i, b) in q.producers.withIndex()) arr.put(i, arr, wrapAnyPeripheral(b, parent))
+                ScriptableObject.putProperty(obj, "producers", arr)
+            }
+            run {
+                val arr = cx.newArray(parent, q.consumers.size)
+                for ((i, b) in q.consumers.withIndex()) arr.put(i, arr, wrapAnyPeripheral(b, parent))
+                ScriptableObject.putProperty(obj, "consumers", arr)
+            }
+            run {
+                val arr = cx.newArray(parent, q.inputs.size)
+                for ((i, id) in q.inputs.withIndex()) arr.put(i, arr, id)
+                ScriptableObject.putProperty(obj, "inputs", arr)
+            }
+            run {
+                val arr = cx.newArray(parent, q.outputs.size)
+                for ((i, id) in q.outputs.withIndex()) arr.put(i, arr, id)
+                ScriptableObject.putProperty(obj, "outputs", arr)
+            }
+            obj
+        }
+
+        val recipes = object : BaseFunction(parent, getFunctionPrototype(parent)) {
+            override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable?, args: Array<out Any?>): Any {
+                return runQuery(cx, asString(args, 0))
+            }
+        }
+        defineFsMethod(recipes, "query", parent, 1) { args ->
+            runQuery(cx(), asString(args, 0))
+        }
+        defineFsMethod(recipes, "craft", parent, 2) { args ->
+            val itemId = asString(args, 0)
+            val count = (args.getOrNull(1) as? Number)?.toInt() ?: 1
+            RecipeCrafter(env).craft(itemId, count)
+        }
+        return recipes
+    }
 
     /**
      * Build the `network` JS object:

@@ -155,13 +155,22 @@ function Label:draw(monitor)
     local textPx = #text * pxPerCol
 
     local textX = x
+    local textCol
     if self.align == "center" then
         textX = x + math.floor((w - textPx) / 2)
+        textCol = math.max(0, math.floor(textX / pxPerCol))
     elseif self.align == "right" then
         textX = x + w - textPx
+        -- right-align: floor keeps the text's right edge <= x+w.
+        textCol = math.max(0, math.floor(textX / pxPerCol))
+    else
+        -- left-align (default): snap to the cell AT or AFTER textX, so text
+        -- never renders LEFT of its intended pixel x. Floor would snap back
+        -- by up to pxPerCol-1 px, which made Labels inside Cards with
+        -- padding < pxPerCol (e.g. 4px padding vs 12px cells) render on top
+        -- of the card's left border.
+        textCol = math.max(0, math.ceil(textX / pxPerCol))
     end
-
-    local textCol = math.max(0, math.floor(textX / pxPerCol))
 
     local fg = resolveColor(self.color, 0xFFFFFFFF)
     monitor:drawText(textCol, textRow, text, fg, 0)
@@ -180,6 +189,63 @@ end
 local Bar = setmetatable({}, { __index = Widget })
 Bar.__index = Bar
 
+-- 5x7 pixel font for digits + '%'. Mirrors the SMALL_FONT table in
+-- Peripheral.kt; kept client-side so we can rasterize at arbitrary pixel
+-- scale via drawRect (the engine's drawSmallText is fixed at 1x). Rows
+-- are 5-bit patterns, MSB = leftmost pixel.
+local _BAR_SMALL_FONT = {
+    ['0'] = {14, 17, 17, 17, 17, 17, 14},
+    ['1'] = {4,  12, 4,  4,  4,  4,  14},
+    ['2'] = {14, 17, 1,  2,  4,  8,  31},
+    ['3'] = {14, 17, 1,  6,  1,  17, 14},
+    ['4'] = {2,  6,  10, 18, 31, 2,  2 },
+    ['5'] = {31, 16, 30, 1,  1,  17, 14},
+    ['6'] = {14, 16, 16, 30, 17, 17, 14},
+    ['7'] = {31, 1,  2,  4,  8,  8,  8 },
+    ['8'] = {14, 17, 17, 14, 17, 17, 14},
+    ['9'] = {14, 17, 17, 15, 1,  1,  14},
+    ['%'] = {25, 26, 2,  4,  8,  11, 19},
+}
+local _BAR_SMALL_FONT_W = 5
+local _BAR_SMALL_FONT_H = 7
+
+-- Rasterize `text` centered at pixel (cx, cy) with each source pixel blown
+-- up to a (scale x scale) rect. At scale=1 this is functionally equivalent
+-- to monitor:drawSmallText; at higher scales it produces a chunky-pixel
+-- overlay you can read from across the room. Unsupported chars render as
+-- gaps (same as drawSmallText).
+local function _drawScaledPct(monitor, cx, cy, text, color, scale)
+    scale = scale or 1
+    if scale < 1 then scale = 1 end
+    local len = #text
+    if len == 0 then return end
+    local charW = _BAR_SMALL_FONT_W * scale
+    local charH = _BAR_SMALL_FONT_H * scale
+    local gap   = scale
+    local totalW = len * charW + (len - 1) * gap
+    local x0 = cx - math.floor(totalW / 2)
+    local y0 = cy - math.floor(charH / 2)
+    for i = 1, len do
+        local ch = text:sub(i, i)
+        local glyph = _BAR_SMALL_FONT[ch]
+        if glyph then
+            local gx = x0 + (i - 1) * (charW + gap)
+            for row = 1, _BAR_SMALL_FONT_H do
+                local bits = glyph[row]
+                for col = 0, _BAR_SMALL_FONT_W - 1 do
+                    -- MSB = leftmost px; mask bit (W-1-col).
+                    local mask = 2 ^ (_BAR_SMALL_FONT_W - 1 - col)
+                    if math.floor(bits / mask) % 2 == 1 then
+                        monitor:drawRect(gx + col * scale,
+                                         y0 + (row - 1) * scale,
+                                         scale, scale, color)
+                    end
+                end
+            end
+        end
+    end
+end
+
 function M.Bar(props)
     local o = setmetatable({
         kind = "Bar",
@@ -192,6 +258,8 @@ function M.Bar(props)
         markerColor = "fg",
         orientation = "h",    -- "h" | "v"
         showPct = false,
+        pctScale = 1,         -- >=2 switches to the scaled 5x7 renderer
+        pctColor = "fg",      -- label color (also applies at scale=1)
         visible = true,
     }, Bar)
     if props then for k, v in pairs(props) do o[k] = v end end
@@ -250,13 +318,21 @@ function Bar:draw(monitor)
     if bc ~= 0 then monitor:drawRectOutline(x, y, w, h, bc, 1) end
 
     -- Percent overlay. Pixel-space glyph (5x7 font) so "42%" sits truly
-    -- centered in the bar rect, independent of cell geometry. Engine-side
-    -- drawSmallText handles the 5x7 font blit; only digits + '%' are
-    -- supported, which matches the label format.
+    -- centered in the bar rect, independent of cell geometry. Scale=1 uses
+    -- the engine's single-pass drawSmallText; scale>=2 falls back to the
+    -- Lua-side scaled rasterizer so big bars get legible-from-distance %
+    -- text (the native 5x7 is ~35px wide, unreadable past a few blocks).
     if self.showPct then
         local label = string.format("%d%%", math.floor(pct * 100 + 0.5))
-        local fg = resolveColor("fg", 0xFFFFFFFF)
-        monitor:drawSmallText(math.floor(x + w / 2), math.floor(y + h / 2), label, fg)
+        local fg = resolveColor(self.pctColor or "fg", 0xFFFFFFFF)
+        local scale = self.pctScale or 1
+        local cx = math.floor(x + w / 2)
+        local cy = math.floor(y + h / 2)
+        if scale <= 1 then
+            monitor:drawSmallText(cx, cy, label, fg)
+        else
+            _drawScaledPct(monitor, cx, cy, label, fg, scale)
+        end
     end
 end
 
@@ -1550,26 +1626,43 @@ function Container:layout(monitor)
                 -- to the parent's innerW. This lets a VBox of measure-less
                 -- widgets (e.g. Toggles) inherit the parent width down the
                 -- tree instead of collapsing to 0.
+                --
+                -- Flex>0 children ALWAYS stretch cross-axis even when their
+                -- measure reports content. `flex` means "fill" on main axis;
+                -- hugging on cross would leave big gaps and collapse nested
+                -- containers whose children have intrinsic width (e.g. a
+                -- VBox full of Labels — each Label measures to its text,
+                -- VBox would inherit that and the siblings get starved).
                 if (c.width or 0) <= 0 then
-                    local dw = 0
-                    if monitor and type(c.measure) == "function" then
-                        dw = c:measure(monitor) or 0
+                    if flex > 0 then
+                        c.width = innerW
+                    else
+                        local dw = 0
+                        if monitor and type(c.measure) == "function" then
+                            dw = c:measure(monitor) or 0
+                        end
+                        c.width = dw > 0 and dw or innerW
                     end
-                    c.width = dw > 0 and dw or innerW
                 end
                 c.height = mainSize
             else
                 c.x = cursor
                 c.y = innerY
                 c.width = mainSize
+                -- Cross-axis same rule as the v-axis branch: flex>0 stretches,
+                -- non-flex prefers measured content, both fall back to innerH.
                 if (c.height or 0) <= 0 then
-                    local dh = 0
-                    if monitor and type(c.measure) == "function" then
-                        local _mw
-                        _mw, dh = c:measure(monitor)
-                        dh = dh or 0
+                    if flex > 0 then
+                        c.height = innerH
+                    else
+                        local dh = 0
+                        if monitor and type(c.measure) == "function" then
+                            local _mw
+                            _mw, dh = c:measure(monitor)
+                            dh = dh or 0
+                        end
+                        c.height = dh > 0 and dh or innerH
                     end
-                    c.height = dh > 0 and dh or innerH
                 end
             end
 

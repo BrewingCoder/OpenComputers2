@@ -1,6 +1,7 @@
 package com.brewingcoder.oc2.block
 
 import com.brewingcoder.oc2.OpenComputers2
+import com.brewingcoder.oc2.block.parts.AdapterPartsMenu
 import com.brewingcoder.oc2.block.parts.BlockPartOps
 import com.brewingcoder.oc2.block.parts.PartCapabilityKeys
 import com.brewingcoder.oc2.block.parts.PartChannelRegistrant
@@ -8,15 +9,21 @@ import com.brewingcoder.oc2.platform.ChannelRegistry
 import com.brewingcoder.oc2.platform.Position
 import com.brewingcoder.oc2.platform.parts.CapabilityKey
 import com.brewingcoder.oc2.platform.parts.Part
+import com.brewingcoder.oc2.platform.parts.PartFaceMap
 import com.brewingcoder.oc2.platform.parts.PartHost
 import com.brewingcoder.oc2.platform.parts.PartRegistry
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.core.HolderLookup
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.network.chat.Component
 import net.minecraft.network.protocol.Packet
 import net.minecraft.network.protocol.game.ClientGamePacketListener
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket
+import net.minecraft.world.MenuProvider
+import net.minecraft.world.entity.player.Inventory
+import net.minecraft.world.entity.player.Player
+import net.minecraft.world.inventory.AbstractContainerMenu
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.state.BlockState
 import java.util.concurrent.TimeUnit
@@ -44,7 +51,8 @@ import java.util.function.Supplier
  *   - No client-side cable rendering (visual polish lands in a follow-up)
  */
 class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
-    BlockEntity(ModBlockEntities.ADAPTER.get(), pos, state) {
+    BlockEntity(ModBlockEntities.ADAPTER.get(), pos, state),
+    MenuProvider {
 
     /**
      * Legacy adapter-level channel — kept ONLY to migrate older NBT to the
@@ -154,6 +162,74 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
         return part
     }
 
+    /**
+     * Move the part on [from] to [to], preserving the [Part] instance (label,
+     * channelId, accessSide, options all carry over — no remove+install loop).
+     * Re-runs onAttach against the new face's host so capability lookups
+     * resolve against the new neighbor; re-registers the channel registrant
+     * under the new face key.
+     *
+     * Returns true on success; false if [from] is empty, [to] is occupied, or
+     * [from] == [to]. Caller should reject the user's drag in the false case
+     * rather than treat it as a no-op.
+     */
+    fun movePart(from: Direction, to: Direction): Boolean {
+        val part = parts[from] ?: return false
+        if (registryShouldTrack) {
+            unregisterPart(from)
+            part.onDetach()
+        }
+        if (!PartFaceMap.move(parts, from, to)) {
+            // Bail-out: re-attach + re-register on the original face so the
+            // adapter doesn't end up with a detached-but-still-keyed part.
+            if (registryShouldTrack) {
+                part.onAttach(host(from))
+                registerPart(from, part)
+            }
+            return false
+        }
+        if (registryShouldTrack) {
+            part.onAttach(host(to))
+            registerPart(to, part)
+            recomputeConnections()
+        }
+        setChanged()
+        sync()
+        OpenComputers2.LOGGER.info("adapter @ {} moved {} from face {} to face {}",
+            blockPos, part.typeId, from, to)
+        return true
+    }
+
+    /**
+     * Swap the parts on [a] and [b]. Both [Part] instances survive — settings
+     * stay attached to their original parts, just on different faces. Each
+     * part's capability lookup re-resolves against its new neighbor.
+     *
+     * Returns false (no-op) if either face is empty or [a] == [b].
+     */
+    fun swapParts(a: Direction, b: Direction): Boolean {
+        val partA = parts[a] ?: return false
+        val partB = parts[b] ?: return false
+        if (a == b) return false
+        if (registryShouldTrack) {
+            unregisterPart(a); partA.onDetach()
+            unregisterPart(b); partB.onDetach()
+        }
+        // Helper validates the inputs again — defense-in-depth, but really we
+        // already proved both faces are populated above.
+        check(PartFaceMap.swap(parts, a, b)) { "swap precondition violated" }
+        if (registryShouldTrack) {
+            partB.onAttach(host(a)); registerPart(a, partB)
+            partA.onAttach(host(b)); registerPart(b, partA)
+            recomputeConnections()
+        }
+        setChanged()
+        sync()
+        OpenComputers2.LOGGER.info("adapter @ {} swapped {}<->{} on faces {}<->{}",
+            blockPos, partA.typeId, partB.typeId, a, b)
+        return true
+    }
+
     fun partOn(face: Direction): Part? = parts[face]
     fun installedFaces(): Set<Direction> = parts.keys.toSet()
 
@@ -190,6 +266,22 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
         val part = parts[face] ?: return
         part.options.clear()
         part.options.putAll(newOpts)
+        setChanged()
+        sync()
+    }
+
+    /**
+     * Update the free-form `data` text of the part on [face]. Persisted to NBT
+     * and surfaced to scripts as `peripheral.data`. The engine never parses
+     * this string — it's a side-channel for user-defined grammars (e.g. the
+     * stocking demo in `examples/stock.lua`).
+     */
+    fun setPartData(face: Direction, newData: String) {
+        val part = parts[face] ?: return
+        if (part.data == newData) return
+        OpenComputers2.LOGGER.info("adapter @ {} re-data {} on face {} ({} -> {} chars)",
+            blockPos, part.typeId, face, part.data.length, newData.length)
+        part.data = newData
         setChanged()
         sync()
     }
@@ -320,6 +412,36 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
             if (server.isSameThread) return lvl.getBlockEntity(target)
             return server.submit(Supplier { lvl.getBlockEntity(target) }).get(5, TimeUnit.SECONDS)
         }
+
+        override fun adjacentBlockId(): String? {
+            val lvl = level ?: return null
+            val target = blockPos.relative(face)
+            val read = {
+                val state = lvl.getBlockState(target)
+                net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.block).toString()
+            }
+            val server = lvl.server ?: return read()
+            if (server.isSameThread) return read()
+            return server.submit(Supplier { read() }).get(5, TimeUnit.SECONDS)
+        }
+
+        override fun serverLevel(): Any? = level
+
+        override fun adjacentBlockHasTag(tagId: String): Boolean {
+            val lvl = level ?: return false
+            val target = blockPos.relative(face)
+            val read = {
+                val state = lvl.getBlockState(target)
+                val tag = net.minecraft.tags.TagKey.create(
+                    net.minecraft.core.registries.Registries.BLOCK,
+                    net.minecraft.resources.ResourceLocation.parse(tagId),
+                )
+                state.`is`(tag)
+            }
+            val server = lvl.server ?: return read()
+            if (server.isSameThread) return read()
+            return server.submit(Supplier { read() }).get(5, TimeUnit.SECONDS)
+        }
     }
 
     private fun ensureAdapterId() {
@@ -340,6 +462,12 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
             partTag.putString(NBT_PART_TYPE, part.typeId)
             val nested = CompoundTag()
             part.saveNbt(NbtWriterImpl(nested))
+            // Opt-in escape hatch for parts whose state needs HolderLookup.Provider
+            // (ItemStacks etc.) — runs after the platform-pure write so both
+            // payloads share the same per-part CompoundTag.
+            if (part is com.brewingcoder.oc2.block.parts.PartWithRawNbt) {
+                part.saveRawNbt(nested, registries)
+            }
             partTag.put(NBT_PART_DATA, nested)
             partsTag.put(face.serializedName, partTag)
         }
@@ -368,7 +496,11 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
                 }
                 val part = type.create()
                 if (partTag.contains(NBT_PART_DATA)) {
-                    part.loadNbt(NbtReaderImpl(partTag.getCompound(NBT_PART_DATA)))
+                    val nested = partTag.getCompound(NBT_PART_DATA)
+                    part.loadNbt(NbtReaderImpl(nested))
+                    if (part is com.brewingcoder.oc2.block.parts.PartWithRawNbt) {
+                        part.loadRawNbt(nested, registries)
+                    }
                 }
                 parts[face] = part
             }
@@ -397,6 +529,15 @@ class AdapterBlockEntity(pos: BlockPos, state: BlockState) :
         // flag 2: clients only, no neighbor cascade. Same lesson as Monitor (avoid save hangs).
         lvl.sendBlockUpdated(blockPos, blockState, blockState, 2)
     }
+
+    // ---------- MenuProvider ----------
+
+    /** Title shown in the GUI's caption bar; the screen draws its own title too. */
+    override fun getDisplayName(): Component =
+        Component.translatable("screen.${OpenComputers2.ID}.adapter_parts")
+
+    override fun createMenu(id: Int, inv: Inventory, player: Player): AbstractContainerMenu =
+        AdapterPartsMenu(id, inv, this)
 
     // ---------- NBT bridges ----------
 

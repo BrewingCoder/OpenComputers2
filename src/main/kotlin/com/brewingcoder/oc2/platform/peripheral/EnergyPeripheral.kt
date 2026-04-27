@@ -8,7 +8,7 @@ package com.brewingcoder.oc2.platform.peripheral
 interface EnergyPeripheral : Peripheral {
     override val kind: String get() = "energy"
 
-    val name: String
+    override val name: String
 
     /** Currently stored energy (FE). */
     fun stored(): Int

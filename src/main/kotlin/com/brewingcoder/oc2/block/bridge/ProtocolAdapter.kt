@@ -26,7 +26,8 @@ interface ProtocolAdapter {
     /**
      * Wrap the BE as a peripheral. Returns null when [canHandle] was true at
      * filter time but the underlying handle vanished by call time (rare —
-     * connector lookup race). [name] is the bridge part's label.
+     * connector lookup race). [name] is the bridge part's label, [data] is its
+     * free-form `data` text (surfaced as `peripheral.data` to scripts).
      */
-    fun wrap(be: BlockEntity, face: Direction, name: String, location: Position): BridgePeripheral?
+    fun wrap(be: BlockEntity, face: Direction, name: String, data: String, location: Position): BridgePeripheral?
 }

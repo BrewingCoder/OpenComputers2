@@ -43,8 +43,23 @@ interface Part {
      *
      * The PartConfigScreen renders kind-specific widgets that read/write this
      * map. Persisted in NBT alongside label/channelId.
+     *
+     * NOT a place for arbitrary user text — [PartOptionsCodec] uses `=` and `;`
+     * as field separators and strips them from values. For a free-form text
+     * blob, see [data].
      */
     val options: MutableMap<String, String>
+
+    /**
+     * Free-form, multi-line user text. Generic — the engine never parses it.
+     * Surfaced to scripts as `peripheral.data`; scripts decide the grammar
+     * (see `examples/stock.lua` for a verb-leading reference grammar that
+     * implements Isy-style inventory stocking).
+     *
+     * Stored separately from [options] because options is a rigid `k=v;k=v`
+     * codec that strips `=` and `;`. Persisted to NBT under `userData`.
+     */
+    var data: String
 
     /**
      * Called once after the host BE has wired this part into its face slot.

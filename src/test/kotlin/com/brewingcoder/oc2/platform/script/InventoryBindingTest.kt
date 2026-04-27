@@ -226,4 +226,90 @@ class InventoryBindingTest {
         r.ok shouldBe true
         out.lines shouldBe listOf("3", "-1")
     }
+
+    // ---------- peripheral.find(kind, name) — disambiguation ----------
+    //
+    // Regression: an earlier impl ignored the second arg and returned the first
+    // peripheral of the given kind, so `peripheral.find("inventory", "invFunctional1")`
+    // could silently return a different inventory (e.g. "bpot_1") and read random
+    // contents. The two inventories below have very different sizes so the test
+    // can prove which one was actually selected.
+
+    @Test
+    fun `lua peripheral_find by name picks the matching peripheral, not the first`() {
+        val bpot = FakeInv("bpot_1", 132)
+        val funcA = FakeInv("invFunctional1", 96).apply { setSlot(1, ItemSnapshot("minecraft:coal", 7)) }
+        val out = CapturingOut()
+        val r = CobaltLuaHost().eval("""
+            local p = peripheral.find("inventory", "invFunctional1")
+            print(p.name)
+            print(p.size())
+            local s = p.getItem(1)
+            print(s.id, s.count)
+        """.trimIndent(), "by_name.lua", FakeEnv(mount(), "", out, listOf(bpot, funcA)))
+        r.ok shouldBe true
+        out.lines shouldBe listOf("invFunctional1", "96", "minecraft:coal\t7")
+    }
+
+    @Test
+    fun `lua peripheral_find without name returns first peripheral of kind`() {
+        val bpot = FakeInv("bpot_1", 132)
+        val funcA = FakeInv("invFunctional1", 96)
+        val out = CapturingOut()
+        val r = CobaltLuaHost().eval("""
+            print(peripheral.find("inventory").name)
+        """.trimIndent(), "no_name.lua", FakeEnv(mount(), "", out, listOf(bpot, funcA)))
+        r.ok shouldBe true
+        out.lines shouldBe listOf("bpot_1")
+    }
+
+    @Test
+    fun `lua peripheral_find by name returns nil when no match`() {
+        val a = FakeInv("a", 9)
+        val out = CapturingOut()
+        val r = CobaltLuaHost().eval("""
+            print(peripheral.find("inventory", "nope") == nil)
+        """.trimIndent(), "miss.lua", FakeEnv(mount(), "", out, listOf(a)))
+        r.ok shouldBe true
+        out.lines shouldBe listOf("true")
+    }
+
+    @Test
+    fun `js peripheral_find by name picks the matching peripheral, not the first`() {
+        val bpot = FakeInv("bpot_1", 132)
+        val funcA = FakeInv("invFunctional1", 96).apply { setSlot(1, ItemSnapshot("minecraft:coal", 7)) }
+        val out = CapturingOut()
+        val r = RhinoJSHost().eval("""
+            var p = peripheral.find("inventory", "invFunctional1");
+            print(p.name);
+            print(p.size());
+            var s = p.getItem(1);
+            print(s.id + " " + s.count);
+        """.trimIndent(), "by_name.js", FakeEnv(mount(), "", out, listOf(bpot, funcA)))
+        r.ok shouldBe true
+        out.lines shouldBe listOf("invFunctional1", "96", "minecraft:coal 7")
+    }
+
+    @Test
+    fun `js peripheral_find without name returns first peripheral of kind`() {
+        val bpot = FakeInv("bpot_1", 132)
+        val funcA = FakeInv("invFunctional1", 96)
+        val out = CapturingOut()
+        val r = RhinoJSHost().eval("""
+            print(peripheral.find("inventory").name);
+        """.trimIndent(), "no_name.js", FakeEnv(mount(), "", out, listOf(bpot, funcA)))
+        r.ok shouldBe true
+        out.lines shouldBe listOf("bpot_1")
+    }
+
+    @Test
+    fun `js peripheral_find by name returns null when no match`() {
+        val a = FakeInv("a", 9)
+        val out = CapturingOut()
+        val r = RhinoJSHost().eval("""
+            print(peripheral.find("inventory", "nope") === null);
+        """.trimIndent(), "miss.js", FakeEnv(mount(), "", out, listOf(a)))
+        r.ok shouldBe true
+        out.lines shouldBe listOf("true")
+    }
 }

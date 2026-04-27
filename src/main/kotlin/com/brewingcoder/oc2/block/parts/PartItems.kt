@@ -19,6 +19,8 @@ object PartItems {
         EnergyPart.TYPE_ID    -> ModItems.ENERGY_PART
         BlockPart.TYPE_ID     -> ModItems.BLOCK_PART
         BridgePart.TYPE_ID    -> ModItems.BRIDGE_PART
+        CrafterPart.TYPE_ID   -> ModItems.CRAFTER_PART
+        MachineCrafterPart.TYPE_ID -> ModItems.MACHINE_CRAFTER_PART
         else -> null
     }
 }

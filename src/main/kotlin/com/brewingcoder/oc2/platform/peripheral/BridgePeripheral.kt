@@ -21,7 +21,7 @@ interface BridgePeripheral : Peripheral {
     override val kind: String get() = "bridge"
 
     /** Display label — defaults to `bridge_<face>_<adapterId>` like other parts. */
-    val name: String
+    override val name: String
 
     /**
      * Which adapter is currently servicing the discovered BE.
@@ -57,45 +57,23 @@ interface BridgePeripheral : Peripheral {
     fun call(method: String, args: List<Any?>): Any?
 
     /**
-     * Self-introspection. Designed for the developer flow:
+     * Identity-only introspection:
      *
      *   ```lua
      *   local r = peripheral.find("bridge")
      *   print(json.encode(r:describe()))
      *   ```
      *
-     * Returns a map with:
-     *   - `protocol` — adapter id (`"zerocore"`, `"cc"`, `"none"`, ...)
-     *   - `name` — the part's label
-     *   - `target` — underlying BE class / block id (diagnostic)
-     *   - `methods` — list of method names
-     *   - `state` — Map of method-name → return value, populated by probing
-     *     every method with NO args. Methods that need args (or otherwise
-     *     errored) are captured in `errors` instead.
-     *   - `errors` — Map of method-name → error message for probes that failed.
-     *
-     * The default impl probes every method via [call]. Adapters with cheaper
-     * introspection paths can override.
+     * Returns a map with `protocol`, `name`, `target`, and `methods` (method
+     * name list). **Does not invoke any methods.** If a caller wants state,
+     * it must call the getters explicitly by name — that keeps destructive
+     * zero-arg methods (e.g. `doEjectFuel` on a reactor peripheral) from
+     * firing as a discovery side effect.
      */
-    fun describe(): Map<String, Any?> {
-        val methodNames = methods()
-        val state = mutableMapOf<String, Any?>()
-        val errors = mutableMapOf<String, Any?>()
-        for (m in methodNames) {
-            try {
-                val v = call(m, emptyList())
-                if (v != null) state[m] = v else errors[m] = "returned nil (likely needs args or is a setter)"
-            } catch (t: Throwable) {
-                errors[m] = t.message ?: t.javaClass.simpleName
-            }
-        }
-        return mapOf(
-            "protocol" to protocol,
-            "name" to name,
-            "target" to target,
-            "methods" to methodNames,
-            "state" to state,
-            "errors" to errors,
-        )
-    }
+    fun describe(): Map<String, Any?> = mapOf(
+        "protocol" to protocol,
+        "name" to name,
+        "target" to target,
+        "methods" to methods(),
+    )
 }

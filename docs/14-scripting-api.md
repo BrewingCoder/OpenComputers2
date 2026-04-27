@@ -453,22 +453,28 @@ surfaces its API generically.
 | `b.target` | underlying BE class FQN (or block id) — diagnostic only |
 | `b.methods()` | list of method names on the underlying peripheral |
 | `b.call(name, ...args)` | invoke a method, returns single value or list |
-| `b.describe()` | self-introspection map: `{protocol, name, target, methods, state, errors}` — probes every method with no args; great for "what can I do here?" exploration |
+| `b.describe()` | identity map: `{protocol, name, target, methods}`. Does **not** invoke any methods — pure metadata. Call the getters yourself if you want state. |
 
 Method names + value shapes are **mod-specific** — the bridge does no
 normalization. Scripts are talking to the underlying mod's API, OC2 is just
-the courier. Use `b.describe()` to discover what's available:
+the courier. Use `b.methods()` or `b.describe()` to see what's available,
+then call the getters you actually want:
 
 ```lua
 local r = peripheral.find("bridge")
 print(r.protocol, r.target)
-print(json.encode(r.describe()))         -- structured discovery dump
+for _, m in ipairs(r.methods()) do print(m) end
 
 -- Driving an Extreme Reactor:
 print(r.call("getEnergyStored"), "/", r.call("getEnergyCapacity"))
 r.call("setActive", true)
 r.call("setAllControlRodLevels", 50)     -- 50% inserted across all rods
 ```
+
+> **Never auto-probe unknown methods.** Some mod peripherals expose
+> zero-arg methods with destructive side effects (e.g. ZeroCore reactors
+> surface `doEjectFuel` / `doEjectWaste`). Enumerate names first; only
+> call methods you've specifically identified as safe.
 
 Both `r.call(...)` (dot-syntax) and `r:call(...)` (colon-syntax) work
 identically — the wrappers detect and strip the implicit receiver.

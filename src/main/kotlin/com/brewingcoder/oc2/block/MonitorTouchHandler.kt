@@ -17,15 +17,13 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Touch-input wiring for monitor blocks.
  *
- * Click model (UI-friendly):
- *   - **Left-click** monitor → fires touch event (matches mouse UI convention: click-to-press)
- *   - **Right-click** monitor → ALSO fires touch event (back-compat; CC:T muscle memory)
- *   - **Shift + left-click** → vanilla break preserved (players can still mine deliberately)
- *   - **Shift + right-click** → opens the channel config screen
- *
- * Left-click is the primary action so `ui_v1.Button` onClick handlers match what players
- * expect from mouse-driven UI. Right-click remains available so CC:Tweaked-style scripts
- * still work without changes.
+ * Click model:
+ *   - **Left-click** (no sneak) → fires touch event; suppresses block-break chipping
+ *   - **Shift + left-click** → vanilla break preserved
+ *   - **Right-click on display face** (no sneak) → fires touch event
+ *   - **Right-click on non-display face** (no sneak) → opens channel config screen
+ *   - **Shift + right-click** → PASS to vanilla (so a monitor in hand places against the
+ *     block, and `neighborChanged` auto-merges into the adjacent group — CC:T's model)
  *
  * GAME-bus subscriber, server-side only (touch dispatch).
  */
@@ -68,20 +66,25 @@ object MonitorTouchHandler {
         if (state.block !== ModBlocks.MONITOR) return
         val player = event.entity
 
-        // Sneak + right-click → config screen (unchanged).
-        if (player.isShiftKeyDown) {
-            if (level.isClientSide) {
-                com.brewingcoder.oc2.client.ClientHandler.openMonitorConfigScreen(level, pos)
-            }
-            event.isCanceled = true
-            event.cancellationResult = InteractionResult.SUCCESS
-            return
-        }
+        // Sneak + right-click → PASS to vanilla so a monitor-in-hand places against the
+        // clicked face; neighborChanged auto-merges into the existing group.
+        if (player.isShiftKeyDown) return
 
-        // Non-sneak right-click: fire touch + swallow click so held items don't place.
+        val displayFace = state.getValue(MonitorBlock.FACING)
+        val clickedFace = event.face
+
         event.isCanceled = true
         event.cancellationResult = InteractionResult.SUCCESS
 
+        if (clickedFace != displayFace) {
+            // Non-display face → channel config screen (client-side only).
+            if (level.isClientSide) {
+                com.brewingcoder.oc2.client.ClientHandler.openMonitorConfigScreen(level, pos)
+            }
+            return
+        }
+
+        // Display face → fire touch on server.
         if (level.isClientSide) return
         fireTouchDeduped(level, pos, state, player, event.hitVec.location)
     }

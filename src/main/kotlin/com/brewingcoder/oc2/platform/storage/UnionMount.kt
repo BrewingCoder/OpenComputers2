@@ -61,6 +61,12 @@ class UnionMount(
         return if (isRom(n)) rom.size(stripRom(n)) else primary.size(n)
     }
 
+    override fun lastModified(path: String): Long {
+        val n = MountPaths.normalize(path)
+        if (n.isEmpty()) return -1L
+        return if (isRom(n)) rom.lastModified(stripRom(n)) else primary.lastModified(n)
+    }
+
     override fun openForRead(path: String): SeekableByteChannel {
         val n = MountPaths.normalize(path)
         if (n.isEmpty()) throw StorageException("not a file: '$path'")

@@ -36,12 +36,13 @@ class BeScriptRunner : ScriptRunner {
         peripheralFinder: (String) -> Peripheral?,
         peripheralLister: (String?) -> List<Peripheral>,
         networkAccess: NetworkAccess,
+        scriptArgs: List<String>,
     ): ScriptRunner.StartResult {
         val existing = foreground
         if (existing != null && !existing.isDone()) {
             return ScriptRunner.StartResult.AlreadyRunning(existing)
         }
-        val h = spawn(host, source, chunkName, mount, cwd, peripheralFinder, peripheralLister, networkAccess)
+        val h = spawn(host, source, chunkName, mount, cwd, peripheralFinder, peripheralLister, networkAccess, scriptArgs)
         foreground = h
         return ScriptRunner.StartResult.Started(h)
     }
@@ -56,8 +57,9 @@ class BeScriptRunner : ScriptRunner {
         peripheralFinder: (String) -> Peripheral?,
         peripheralLister: (String?) -> List<Peripheral>,
         networkAccess: NetworkAccess,
+        scriptArgs: List<String>,
     ): ScriptRunner.StartResult.Started {
-        val h = spawn(host, source, chunkName, mount, cwd, peripheralFinder, peripheralLister, networkAccess)
+        val h = spawn(host, source, chunkName, mount, cwd, peripheralFinder, peripheralLister, networkAccess, scriptArgs)
         background.add(h)
         return ScriptRunner.StartResult.Started(h)
     }
@@ -116,9 +118,10 @@ class BeScriptRunner : ScriptRunner {
         peripheralFinder: (String) -> Peripheral?,
         peripheralLister: (String?) -> List<Peripheral>,
         networkAccess: NetworkAccess,
+        scriptArgs: List<String>,
     ): ScriptRunHandle {
         val pid = NEXT_PID.getAndIncrement()
-        val h = ScriptRunHandle(pid, chunkName, host, source, mount, cwd, peripheralFinder, peripheralLister, networkAccess)
+        val h = ScriptRunHandle(pid, chunkName, host, source, mount, cwd, peripheralFinder, peripheralLister, networkAccess, scriptArgs)
         h.start()
         return h
     }

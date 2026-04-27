@@ -102,6 +102,7 @@ interface ScriptRunner {
         peripheralFinder: (String) -> Peripheral?,
         peripheralLister: (String?) -> List<Peripheral>,
         networkAccess: NetworkAccess = NetworkAccess.NOOP,
+        scriptArgs: List<String> = emptyList(),
     ): StartResult
 
     /** Start a background script. Always succeeds (no concurrency limit). */
@@ -114,6 +115,7 @@ interface ScriptRunner {
         peripheralFinder: (String) -> Peripheral?,
         peripheralLister: (String?) -> List<Peripheral>,
         networkAccess: NetworkAccess = NetworkAccess.NOOP,
+        scriptArgs: List<String> = emptyList(),
     ): StartResult.Started = throw UnsupportedOperationException("background scripts not supported by this runner")
 
     /** Foreground only (or null). */
@@ -153,8 +155,9 @@ interface ScriptRunner {
                 peripheralFinder: (String) -> Peripheral?,
                 peripheralLister: (String?) -> List<Peripheral>,
                 networkAccess: NetworkAccess,
+                scriptArgs: List<String>,
             ): StartResult {
-                val h = ScriptRunHandle(0, chunkName, host, source, mount, cwd, peripheralFinder, peripheralLister, networkAccess)
+                val h = ScriptRunHandle(0, chunkName, host, source, mount, cwd, peripheralFinder, peripheralLister, networkAccess, scriptArgs)
                 h.start()
                 while (!h.isDone()) Thread.sleep(1)
                 return StartResult.Started(h)

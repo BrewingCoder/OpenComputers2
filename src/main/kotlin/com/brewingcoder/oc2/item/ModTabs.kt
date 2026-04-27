@@ -35,6 +35,9 @@ object ModTabs {
                 output.accept(ModItems.ENERGY_PART)
                 output.accept(ModItems.BLOCK_PART)
                 output.accept(ModItems.BRIDGE_PART)
+                output.accept(ModItems.CRAFTER_PART)
+                output.accept(ModItems.MACHINE_CRAFTER_PART)
+                output.accept(ModItems.RECIPE_CARD)
             }
             .build()
     }

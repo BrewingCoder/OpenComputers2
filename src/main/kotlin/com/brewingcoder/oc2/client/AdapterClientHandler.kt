@@ -21,6 +21,7 @@ object AdapterClientHandler {
         val partChannel = part?.channelId ?: AdapterBlockEntity.DEFAULT_CHANNEL
         val accessSide = (part as? com.brewingcoder.oc2.platform.parts.CapabilityBackedPart<*>)?.accessSide ?: ""
         val options = part?.options?.toMap() ?: emptyMap()
-        mc.setScreen(PartConfigScreen(pos, face, kind, currentLabel, partChannel, accessSide, options))
+        val data = part?.data ?: ""
+        mc.setScreen(PartConfigScreen(pos, face, kind, currentLabel, partChannel, accessSide, options, data))
     }
 }

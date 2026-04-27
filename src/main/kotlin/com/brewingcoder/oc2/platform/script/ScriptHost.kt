@@ -22,10 +22,14 @@ interface ScriptHost {
      *   - `fs.*` (see [ScriptFsOps]) — bound to [ScriptEnv.mount], cwd-resolved against [ScriptEnv.cwd]
      *   - `peripheral.find(kind)` — looks up a [Peripheral] via [ScriptEnv.findPeripheral]
      *
+     * [scriptArgs] are forwarded to the script's main chunk: Lua reads them via
+     * `local a = {...}` (vararg), JS via the global `args` array. Empty by default
+     * for callers that just `eval(source, chunkName, env)` without CLI args.
+     *
      * Returns synchronously; v0 has no cooperative yielding (intentional — see
      * `docs/12-followups.md`).
      */
-    fun eval(source: String, chunkName: String, env: ScriptEnv): ScriptResult
+    fun eval(source: String, chunkName: String, env: ScriptEnv, scriptArgs: List<String> = emptyList()): ScriptResult
 }
 
 /**

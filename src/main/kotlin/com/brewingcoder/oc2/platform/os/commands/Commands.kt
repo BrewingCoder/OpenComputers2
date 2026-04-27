@@ -118,9 +118,9 @@ class LsCommand : ShellCommand {
                 ctx.out.println("ls: no such path: ${args.firstOrNull() ?: target}")
                 return 1
             }
-            // Pointed at a single file: render one entry.
             if (target.isNotEmpty() && !ctx.mount.isDirectory(target)) {
-                ctx.out.println(formatEntry(MountPaths.name(target), isDir = false, size = ctx.mount.size(target)))
+                printHeader(ctx)
+                ctx.out.println(formatEntry(MountPaths.name(target), isDir = false, size = ctx.mount.size(target), mtime = ctx.mount.lastModified(target)))
                 return 0
             }
             val entries = ctx.mount.list(target)
@@ -128,11 +128,13 @@ class LsCommand : ShellCommand {
                 ctx.out.println("(empty)")
                 return 0
             }
+            printHeader(ctx)
             for (entry in entries) {
                 val full = MountPaths.join(target, entry)
                 val isDir = ctx.mount.isDirectory(full)
                 val size = if (isDir) 0L else ctx.mount.size(full)
-                ctx.out.println(formatEntry(entry, isDir, size))
+                val mtime = ctx.mount.lastModified(full)
+                ctx.out.println(formatEntry(entry, isDir, size, mtime))
             }
             return 0
         } catch (e: StorageException) {
@@ -141,11 +143,23 @@ class LsCommand : ShellCommand {
         }
     }
 
-    private fun formatEntry(name: String, isDir: Boolean, size: Long): String {
-        val type = if (isDir) "d" else "-"
-        val sizeStr = if (isDir) "-" else formatSize(size)
-        val displayName = if (isDir) "$name/" else name
-        return "%s %8s  %s".format(type, sizeStr, displayName)
+    private fun printHeader(ctx: ShellContext) {
+        ctx.out.println("")
+        ctx.out.println("Mode       LastWriteTime         Length  Name")
+        ctx.out.println("----       -------------         ------  ----")
+    }
+
+    private fun formatEntry(name: String, isDir: Boolean, size: Long, mtime: Long): String {
+        val mode = if (isDir) "d----" else "-----"
+        val mtimeStr = formatMtime(mtime)
+        val sizeStr = if (isDir) "" else formatSize(size)
+        return "%-5s      %-18s  %6s  %s".format(mode, mtimeStr, sizeStr, name)
+    }
+
+    private fun formatMtime(mtime: Long): String {
+        if (mtime <= 0) return ""
+        val zdt = java.time.Instant.ofEpochMilli(mtime).atZone(java.time.ZoneId.systemDefault())
+        return java.time.format.DateTimeFormatter.ofPattern("M/d/yyyy  h:mm a").format(zdt)
     }
 
     private fun formatSize(b: Long): String = when {
@@ -353,8 +367,12 @@ internal object ScriptStarter {
             ctx.out.println("$cmdName: ${e.message}"); return 1
         }
         val chunkName = MountPaths.name(target)
+        // Forward shell-line args after the script path: `run smelt.lua minecraft:raw_iron 64`
+        // → script sees ["minecraft:raw_iron", "64"]. Lua: `local a = {...}` or `arg[1]`;
+        // JS: `args[0]`.
+        val scriptArgs = args.drop(1)
         return if (foreground) {
-            val r = ctx.scriptRunner.start(host, source, chunkName, ctx.mount, ctx.cwd, ctx.peripheralFinder, ctx.peripheralLister, ctx.networkAccess)
+            val r = ctx.scriptRunner.start(host, source, chunkName, ctx.mount, ctx.cwd, ctx.peripheralFinder, ctx.peripheralLister, ctx.networkAccess, scriptArgs)
             when (r) {
                 is com.brewingcoder.oc2.platform.os.ScriptRunner.StartResult.Started -> {
                     ctx.out.println("started '$chunkName' (pid=${r.handle.pid}). use `jobs` / `kill` to manage.")
@@ -366,7 +384,7 @@ internal object ScriptStarter {
                 }
             }
         } else {
-            val r = ctx.scriptRunner.startBackground(host, source, chunkName, ctx.mount, ctx.cwd, ctx.peripheralFinder, ctx.peripheralLister, ctx.networkAccess)
+            val r = ctx.scriptRunner.startBackground(host, source, chunkName, ctx.mount, ctx.cwd, ctx.peripheralFinder, ctx.peripheralLister, ctx.networkAccess, scriptArgs)
             ctx.out.println("started '$chunkName' in background (pid=${r.handle.pid}).")
             0
         }

@@ -78,8 +78,10 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
             if (slave.masterPos != blockPos) continue
             slave.channelId = newChannel
             slave.setChanged()
+            slave.sync()
         }
         setChanged()
+        sync()
     }
 
     override val location: Position
@@ -769,9 +771,7 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
                         if (isPrintable(ch)) {
                             if (cursorCol >= totalCols) newline()
                             val idx = cursorRow * totalCols + cursorCol
-                            OpenComputers2.LOGGER.debug("doWriteText: writing '{}' to buf[{}][{}], bufIdentity={}", ch, cursorRow, cursorCol, System.identityHashCode(buf))
                             buf[cursorRow][cursorCol] = ch
-                            OpenComputers2.LOGGER.debug("doWriteText: buf[{}][{}] is now '{}', bufferIdentity={}", cursorRow, cursorCol, buffer?.get(cursorRow)?.get(cursorCol), System.identityHashCode(buffer))
                             fg[idx] = currentFg
                             bg[idx] = currentBg
                             cursorCol++
@@ -905,8 +905,6 @@ class MonitorBlockEntity(pos: BlockPos, state: BlockState) :
         tag.putInt(NBT_CUR_BG, currentBg)
         // Buffer as a single \n-joined string (master only).
         buffer?.let { buf ->
-            val firstRow = if (buf.isNotEmpty()) String(buf[0]).trimEnd() else ""
-            OpenComputers2.LOGGER.debug("saveAdditional @ {} isMaster={}: buf[0]=[{}] bufIdentity={}", blockPos, isMaster, firstRow, System.identityHashCode(buf))
             tag.putString(NBT_BUFFER, buf.joinToString("\n") { row -> String(row) })
         }
         fgColors?.let { tag.putIntArray(NBT_FG, it) }

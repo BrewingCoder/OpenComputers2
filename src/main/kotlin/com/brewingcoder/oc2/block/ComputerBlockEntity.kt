@@ -13,6 +13,7 @@ import com.brewingcoder.oc2.platform.os.Shell
 import com.brewingcoder.oc2.platform.os.ShellMetadata
 import com.brewingcoder.oc2.platform.os.ShellResult
 import com.brewingcoder.oc2.platform.os.ShellSession
+import com.brewingcoder.oc2.platform.os.StartupConfig
 import com.brewingcoder.oc2.platform.os.commands.DefaultCommands
 import com.brewingcoder.oc2.platform.peripheral.Peripheral
 import com.brewingcoder.oc2.platform.script.ScriptRunHandle
@@ -96,6 +97,20 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
     private var tickCounter: Int = 0
 
     /**
+     * Boot-script scheduler. `startup.cfg` is parsed and each entry launched via
+     * `bg <line>` once per BE instance, after a small delay so peripherals on
+     * neighboring chunks have a chance to register.
+     *
+     *   - `pendingStartupTicks > 0`  → countdown active; will fire on reach 0
+     *   - `pendingStartupTicks == 0` → idle (already fired or never scheduled)
+     *   - `startupRan == true`       → don't re-schedule for this BE instance
+     *                                   (chunk reload creates a fresh instance and
+     *                                   resets the flag, which is intentional)
+     */
+    private var pendingStartupTicks: Int = 0
+    private var startupRan: Boolean = false
+
+    /**
      * Ring buffer of recent script output lines, kept server-side for
      * diagnostics. Read by [ServerLoadedComputers.consoleOf] (oc2-debug uses
      * this to verify scripts ran without opening every computer's GUI).
@@ -119,6 +134,11 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
             ensureComputerId()
             rootMount()
             registerWithDiagnostics()
+            // Schedule startup.cfg if the computer was already on at save time.
+            // The delay gives neighboring chunks (peripherals, networked
+            // computers) a chance to load and register before scripts start
+            // calling peripheral.find().
+            if (powered && !startupRan) pendingStartupTicks = STARTUP_DELAY_TICKS
         }
     }
 
@@ -180,10 +200,61 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
                 blockPos, channelId, tickCounter,
             )
         }
+        // Pump the startup-script countdown. Done before drainScriptOutput so
+        // any output from startup-launched scripts can stream in on the same
+        // tick rather than waiting another full tick.
+        if (pendingStartupTicks > 0) {
+            pendingStartupTicks--
+            if (pendingStartupTicks == 0) runStartupCfg()
+        }
         // Drain script output every tick, push to the originating player.
         // Live updates work — the player sees print() output as it happens
         // rather than batched at script end.
         drainScriptOutput()
+    }
+
+    /**
+     * Read `/startup.cfg`, launch every entry as a background script. Best
+     * effort: missing file is silent, parse errors surface as `bg` failures
+     * in the recent-output buffer (visible via `oc2dbg read_computer_console`).
+     *
+     * Called from [tick] when [pendingStartupTicks] hits zero. Marks
+     * [startupRan] true unconditionally so a power-cycle doesn't re-launch
+     * scripts that may already be running in the background.
+     */
+    private fun runStartupCfg() {
+        startupRan = true
+        if (!powered) return
+        val mount = try { rootMount() } catch (t: Throwable) {
+            OpenComputers2.LOGGER.warn("computer @ {} startup: rootMount failed: {}", blockPos, t.message)
+            return
+        }
+        if (!mount.exists(STARTUP_CFG_PATH) || mount.isDirectory(STARTUP_CFG_PATH)) return
+        val text = try {
+            mount.openForRead(STARTUP_CFG_PATH).use { ch ->
+                val size = ch.size().toInt()
+                val buf = java.nio.ByteBuffer.allocate(size)
+                while (buf.hasRemaining()) { val n = ch.read(buf); if (n < 0) break }
+                String(buf.array(), 0, buf.position(), Charsets.UTF_8)
+            }
+        } catch (t: Throwable) {
+            OpenComputers2.LOGGER.warn("computer @ {} startup: read failed: {}", blockPos, t.message)
+            return
+        }
+        val entries = StartupConfig.parse(text)
+        if (entries.isEmpty()) return
+        OpenComputers2.LOGGER.info("computer @ {} running startup.cfg with {} entries", blockPos, entries.size)
+        for (entry in entries) {
+            // `bg <invocation>` reuses the existing shell path so all the
+            // peripheral / network / mount plumbing is identical to a
+            // user-typed bg command. Output goes to the recent-output buffer
+            // (no foreground originator at boot) and to each script's tail
+            // buffer; user can `tail <pid>` later from the open shell.
+            val result = executeShellCommand("bg ${entry.invocation}", originator = null)
+            for (line in result.lines) {
+                OpenComputers2.LOGGER.info("computer @ {} startup: {}", blockPos, line)
+            }
+        }
     }
 
     private fun drainScriptOutput() {
@@ -364,6 +435,12 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
             synchronized(recentOutput) { recentOutput.clear() }
             // Tell the open client screen to wipe its terminal too.
             sendOutputToOriginator(emptyList(), clearFirst = true)
+        } else if (!startupRan) {
+            // First power-on after BE creation: schedule startup.cfg. Same
+            // delay as the world-load path so peripheral discovery has time
+            // to settle (placing a computer + powering on while still walking
+            // adapters into place was producing peripheral.find() misses).
+            pendingStartupTicks = STARTUP_DELAY_TICKS
         }
         OpenComputers2.LOGGER.info("computer @ {} powered {}", blockPos, if (on) "ON" else "OFF")
         setChanged()
@@ -497,6 +574,10 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) :
         const val ID_UNASSIGNED: Int = -1
         /** Lines retained in the diagnostics ring buffer per computer. */
         const val RECENT_OUTPUT_CAP: Int = 200
+        /** Ticks between the BE becoming live (load or power-on) and startup.cfg firing. */
+        private const val STARTUP_DELAY_TICKS: Int = 5
+        /** Path within the per-computer mount that holds the boot manifest. */
+        private const val STARTUP_CFG_PATH: String = "startup.cfg"
         private const val NBT_CHANNEL = "channelId"
         private const val NBT_COMPUTER_ID = "computerId"
         private const val NBT_POWERED = "powered"

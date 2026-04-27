@@ -193,6 +193,14 @@ class ComputerScreen(
                 submitCommand()
                 return true
             }
+            KEY_SPACE -> {
+                // AbstractButton.keyPressed activates on SPACE when focused.
+                // The Power button is the first widget added so it holds default
+                // focus — letting super see SPACE shuts the computer off the
+                // moment the user types "run ". Swallow it here; charTyped
+                // still fires and appends ' ' to the input line.
+                return true
+            }
             KEY_BACKSPACE -> {
                 if (inputLine.isNotEmpty()) inputLine = inputLine.dropLast(1)
                 return true
@@ -512,6 +520,7 @@ class ComputerScreen(
         private const val KEY_NUMPAD_ENTER = 335
         private const val KEY_BACKSPACE = 259
         private const val KEY_ESCAPE = 256
+        private const val KEY_SPACE = 32
         private const val KEY_V = 86
         private const val KEY_C = 67
         private const val KEY_PAGE_UP = 266

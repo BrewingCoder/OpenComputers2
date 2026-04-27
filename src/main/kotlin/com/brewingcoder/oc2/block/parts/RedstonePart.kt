@@ -19,6 +19,7 @@ class RedstonePart : Part {
     override var label: String = ""
     override var channelId: String = "default"
     override val options: MutableMap<String, String> = mutableMapOf()
+    override var data: String = ""
 
     /** True when the player flipped "Inverted" in the part config GUI. */
     private val inverted: Boolean get() = options["inverted"] == "true"
@@ -48,7 +49,7 @@ class RedstonePart : Part {
         // Snapshot inverted at wrap-time. Same `asPeripheral()` is called per
         // script lookup, so changes from the GUI propagate immediately.
         val invert = inverted
-        return Wrapper(h, label, ::output, invert) { newLevel ->
+        return Wrapper(h, label, data, ::output, invert) { newLevel ->
             // Outgoing signal: invert if requested, then clamp to 0..15.
             val effective = (if (invert) 15 - newLevel else newLevel).coerceIn(0, 15)
             output = effective
@@ -61,6 +62,7 @@ class RedstonePart : Part {
         out.putString("channelId", channelId)
         out.putInt("output", output)
         out.putString("options", com.brewingcoder.oc2.platform.parts.PartOptionsCodec.encode(options))
+        if (data.isNotEmpty()) out.putString("userData", data)
     }
 
     override fun loadNbt(input: Part.NbtReader) {
@@ -71,11 +73,13 @@ class RedstonePart : Part {
             options.clear()
             options.putAll(com.brewingcoder.oc2.platform.parts.PartOptionsCodec.decode(input.getString("options")))
         }
+        data = if (input.has("userData")) input.getString("userData") else ""
     }
 
     private class Wrapper(
         private val host: PartHost,
         override val name: String,
+        override val data: String,
         private val outputGetter: () -> Int,
         private val invert: Boolean,
         private val outputSetter: (Int) -> Unit,

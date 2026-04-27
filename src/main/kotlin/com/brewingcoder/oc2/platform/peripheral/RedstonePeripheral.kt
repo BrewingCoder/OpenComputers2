@@ -13,7 +13,7 @@ interface RedstonePeripheral : Peripheral {
     override val kind: String get() = "redstone"
 
     /** Stable display name — auto-generated unless labeled. */
-    val name: String
+    override val name: String
 
     /** Signal the adjacent block is feeding into this face (0–15). */
     fun getInput(): Int

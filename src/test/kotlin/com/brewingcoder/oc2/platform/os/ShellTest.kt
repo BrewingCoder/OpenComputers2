@@ -110,13 +110,14 @@ class ShellTest {
     }
 
     @Test
-    fun `ls shows files and dirs with trailing slash on dirs`() {
+    fun `ls shows files and dirs with mode column`() {
         shell.execute("mkdir adir", session)
         shell.execute("write file.txt content", session)
         val r = shell.execute("ls", session)
-        r.lines.size shouldBe 2
-        r.lines.any { it.startsWith("d") && it.endsWith("adir/") } shouldBe true
-        r.lines.any { it.startsWith("-") && it.endsWith("file.txt") } shouldBe true
+        val body = r.lines.drop(3) // skip blank + Mode/---- header rows
+        body.size shouldBe 2
+        body.any { it.startsWith("d----") && it.endsWith("adir") } shouldBe true
+        body.any { it.startsWith("-----") && it.endsWith("file.txt") } shouldBe true
     }
 
     @Test
@@ -126,9 +127,14 @@ class ShellTest {
         shell.execute("write a hello", session)            // 5 bytes
         shell.execute("write b helloworld", session)       // 10 bytes
         val r = shell.execute("ls", session)
-        r.lines.size shouldBe 2
-        r.lines[0] shouldBe "-        5  a"
-        r.lines[1] shouldBe "-       10  b"
+        val body = r.lines.drop(3)
+        body.size shouldBe 2
+        body[0].startsWith("-----") shouldBe true
+        body[0].endsWith("  a") shouldBe true
+        body[0].contains("     5") shouldBe true
+        body[1].startsWith("-----") shouldBe true
+        body[1].endsWith("  b") shouldBe true
+        body[1].contains("    10") shouldBe true
     }
 
     @Test
@@ -143,7 +149,11 @@ class ShellTest {
     fun `ls of a single file prints that one file`() {
         shell.execute("write only.txt content", session)   // 7 bytes
         val r = shell.execute("ls only.txt", session)
-        r.lines shouldBe listOf("-        7  only.txt")
+        val body = r.lines.drop(3)
+        body.size shouldBe 1
+        body[0].startsWith("-----") shouldBe true
+        body[0].endsWith("  only.txt") shouldBe true
+        body[0].contains("     7") shouldBe true
     }
 
     @Test
@@ -227,9 +237,9 @@ class ShellTest {
         val r = shell.execute("mkdir a", session)
         r.exitCode shouldBe 0
         shell.execute("mkdir a/b", session).exitCode shouldBe 0
-        val lines = shell.execute("ls a", session).lines
-        lines.size shouldBe 1
-        lines[0].endsWith("b/") shouldBe true
-        lines[0].startsWith("d") shouldBe true
+        val body = shell.execute("ls a", session).lines.drop(3)
+        body.size shouldBe 1
+        body[0].endsWith("b") shouldBe true
+        body[0].startsWith("d----") shouldBe true
     }
 }

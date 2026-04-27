@@ -4,9 +4,11 @@ import com.brewingcoder.oc2.OpenComputers2
 import com.brewingcoder.oc2.block.ModBlocks
 import com.brewingcoder.oc2.block.parts.BlockPart
 import com.brewingcoder.oc2.block.parts.BridgePart
+import com.brewingcoder.oc2.block.parts.CrafterPart
 import com.brewingcoder.oc2.block.parts.EnergyPart
 import com.brewingcoder.oc2.block.parts.FluidPart
 import com.brewingcoder.oc2.block.parts.InventoryPart
+import com.brewingcoder.oc2.block.parts.MachineCrafterPart
 import com.brewingcoder.oc2.block.parts.PartItem
 import com.brewingcoder.oc2.block.parts.RedstonePart
 import net.minecraft.world.item.BlockItem
@@ -75,4 +77,22 @@ object ModItems {
         PartItem(BridgePart.TYPE, Item.Properties())
     }
     val BRIDGE_PART: PartItem by BRIDGE_PART_HOLDER
+
+    /** Crafter part — wraps an adjacent vanilla crafting table; holds 18 Recipe Cards. */
+    val CRAFTER_PART_HOLDER: DeferredItem<PartItem> = REGISTRY.register("crafter_part") { ->
+        PartItem(CrafterPart.TYPE, Item.Properties())
+    }
+    val CRAFTER_PART: PartItem by CRAFTER_PART_HOLDER
+
+    /** Machine Crafter part — wraps an adjacent IItemHandler-bearing block; holds 18 machine-mode Recipe Cards. */
+    val MACHINE_CRAFTER_PART_HOLDER: DeferredItem<PartItem> = REGISTRY.register("machine_crafter_part") { ->
+        PartItem(MachineCrafterPart.TYPE, Item.Properties())
+    }
+    val MACHINE_CRAFTER_PART: PartItem by MACHINE_CRAFTER_PART_HOLDER
+
+    /** Recipe Card — empty cards stack; programmed cards carry a 3×3 ghost pattern. */
+    val RECIPE_CARD_HOLDER: DeferredItem<RecipeCardItem> = REGISTRY.register("recipe_card") { ->
+        RecipeCardItem(Item.Properties().stacksTo(64))
+    }
+    val RECIPE_CARD: RecipeCardItem by RECIPE_CARD_HOLDER
 }

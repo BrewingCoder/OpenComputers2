@@ -57,6 +57,16 @@ class WorldFileMount(
         return p.fileSize()
     }
 
+    override fun lastModified(path: String): Long {
+        val p = resolve(path)
+        if (!Files.exists(p)) return -1L
+        return try {
+            Files.getLastModifiedTime(p).toMillis()
+        } catch (_: IOException) {
+            -1L
+        }
+    }
+
     override fun openForRead(path: String): SeekableByteChannel {
         val p = resolve(path)
         if (!Files.exists(p)) throw StorageException("no such file: '$path'")

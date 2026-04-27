@@ -57,6 +57,24 @@ object OC2Payloads {
             SetWiFiExtenderChannelPayload.Companion::handle,
         )
 
+        registrar.playToServer(
+            SaveRecipePatternPayload.TYPE,
+            SaveRecipePatternPayload.STREAM_CODEC,
+            SaveRecipePatternPayload.Companion::handle,
+        )
+
+        registrar.playToServer(
+            OpenCrafterMenuPayload.TYPE,
+            OpenCrafterMenuPayload.STREAM_CODEC,
+            OpenCrafterMenuPayload.Companion::handle,
+        )
+
+        registrar.playToServer(
+            PopulateRecipePatternPayload.TYPE,
+            PopulateRecipePatternPayload.STREAM_CODEC,
+            PopulateRecipePatternPayload.Companion::handle,
+        )
+
         registrar.playToClient(
             TerminalOutputPayload.TYPE,
             TerminalOutputPayload.STREAM_CODEC,

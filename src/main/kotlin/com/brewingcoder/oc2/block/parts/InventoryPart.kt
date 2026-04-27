@@ -23,7 +23,7 @@ import net.neoforged.neoforge.items.IItemHandler
  */
 class InventoryPart : CapabilityBackedPart<IItemHandler>(TYPE_ID, PartCapabilityKeys.ITEM) {
 
-    override fun wrapAsPeripheral(cap: IItemHandler, location: com.brewingcoder.oc2.platform.Position): Peripheral = Wrapper(cap, label, location)
+    override fun wrapAsPeripheral(cap: IItemHandler, location: com.brewingcoder.oc2.platform.Position): Peripheral = Wrapper(cap, label, location, data)
 
     /**
      * [InventoryPeripheral] implementation backed by a live IItemHandler.
@@ -35,7 +35,9 @@ class InventoryPart : CapabilityBackedPart<IItemHandler>(TYPE_ID, PartCapability
         internal val handler: IItemHandler,
         override val name: String,
         override val location: com.brewingcoder.oc2.platform.Position,
-    ) : InventoryPeripheral {
+        override val data: String,
+    ) : InventoryPeripheral, ItemHandlerHost {
+        override val itemHandler: IItemHandler? get() = handler
         override fun size(): Int = handler.slots
 
         override fun getItem(slot: Int): ItemSnapshot? {
@@ -52,7 +54,7 @@ class InventoryPart : CapabilityBackedPart<IItemHandler>(TYPE_ID, PartCapability
             if (src !in 0 until handler.slots) return 0
             val toMove = handler.extractItem(src, count.coerceAtLeast(0), /* simulate = */ true)
             if (toMove.isEmpty) return 0
-            val targetH = (target as? Wrapper)?.handler ?: return 0
+            val targetH = (target as? ItemHandlerHost)?.itemHandler ?: return 0
             // Try the requested slot first; fall back to "first slot that fits"
             val movedStack = if (targetSlot != null) {
                 tryInsertAt(targetH, targetSlot - 1, toMove)
@@ -65,7 +67,7 @@ class InventoryPart : CapabilityBackedPart<IItemHandler>(TYPE_ID, PartCapability
         }
 
         override fun pull(source: InventoryPeripheral, slot: Int, count: Int, targetSlot: Int?): Int {
-            val srcH = (source as? Wrapper)?.handler ?: return 0
+            val srcH = (source as? ItemHandlerHost)?.itemHandler ?: return 0
             val src = slot - 1
             if (src !in 0 until srcH.slots) return 0
             val toMove = srcH.extractItem(src, count.coerceAtLeast(0), /* simulate = */ true)

@@ -126,7 +126,9 @@ class AdapterBlock(properties: Properties) : BaseEntityBlock(properties) {
     /**
      * Empty-hand right-click → open the Part Config GUI for the part on the
      * clicked arm. **Sneak + empty-hand right-click** → remove the part and
-     * drop the part item back at the player. No-op if no part on that face.
+     * drop the part item back at the player. **Empty-hand right-click on an
+     * empty face** → open the Adapter Parts GUI (drag-and-drop install /
+     * re-arrange across all 6 faces).
      */
     override fun useWithoutItem(
         state: BlockState,
@@ -138,15 +140,27 @@ class AdapterBlock(properties: Properties) : BaseEntityBlock(properties) {
         val be = level.getBlockEntity(pos) as? AdapterBlockEntity
             ?: return InteractionResult.PASS
         val face = faceFromHit(hit, pos) ?: hit.direction
-        val part = be.partOn(face) ?: return InteractionResult.PASS
+        val part = be.partOn(face)
+        if (part == null) {
+            // Empty face → parts GUI. Server-side opens the menu; client-side
+            // is sidedSuccess so the click animation still plays.
+            if (!player.isSecondaryUseActive && !level.isClientSide && player is net.minecraft.server.level.ServerPlayer) {
+                player.openMenu(be) { buf -> buf.writeBlockPos(pos) }
+                return InteractionResult.SUCCESS
+            }
+            return if (level.isClientSide) InteractionResult.sidedSuccess(true)
+                   else InteractionResult.PASS
+        }
         if (player.isSecondaryUseActive) {
             // Sneak: remove + spawn drop. Server only — client just consumes the click.
-            // Always drops as an ItemEntity (even in creative) with velocity aimed at
-            // the player, so the pop is visibly attributable to the click.
+            // In survival, drops as an ItemEntity with velocity aimed at the player so
+            // the pop is visibly attributable to the click. In creative we skip the drop
+            // entirely — install doesn't shrink the source stack in creative, so refunding
+            // the removal would net +1 part per install→remove cycle.
             if (!level.isClientSide) {
                 val removed = be.removePart(face) ?: return InteractionResult.PASS
                 val item = PartItems.itemFor(removed.typeId)
-                if (item != null) {
+                if (item != null && !player.abilities.instabuild) {
                     val stack = net.minecraft.world.item.ItemStack(item)
                     // Spawn position: just outside the face we removed from, centered.
                     val origin = pos.relative(face)

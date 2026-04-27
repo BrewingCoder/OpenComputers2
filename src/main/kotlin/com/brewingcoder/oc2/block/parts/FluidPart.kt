@@ -17,12 +17,13 @@ import net.neoforged.neoforge.fluids.capability.IFluidHandler
  */
 class FluidPart : CapabilityBackedPart<IFluidHandler>(TYPE_ID, PartCapabilityKeys.FLUID) {
 
-    override fun wrapAsPeripheral(cap: IFluidHandler, location: com.brewingcoder.oc2.platform.Position): Peripheral = Wrapper(cap, label, location)
+    override fun wrapAsPeripheral(cap: IFluidHandler, location: com.brewingcoder.oc2.platform.Position): Peripheral = Wrapper(cap, label, location, data)
 
-    private class Wrapper(
-        private val handler: IFluidHandler,
+    internal class Wrapper(
+        internal val handler: IFluidHandler,
         override val name: String,
         override val location: com.brewingcoder.oc2.platform.Position,
+        override val data: String,
     ) : FluidPeripheral {
         override fun tanks(): Int = handler.tanks
 

@@ -23,24 +23,36 @@ object BridgeDispatcher {
 
     /**
      * (target mod id, adapter class FQN). Adapter classes MUST be Kotlin objects
-     * with a no-arg constructor (we read the `INSTANCE` field).
+     * with a no-arg constructor (we read the `INSTANCE` field). A `null` modid
+     * means "always load" — the adapter depends only on NeoForge / vanilla core
+     * and has no soft-dep gate.
      *
-     * Order:
+     * Order matters — first-match wins. Specific adapters must appear before
+     * fallbacks.
+     *
      *   1. ZeroCore — covers Big/Extreme Reactors, Turbines, Energizers
-     *   2. (future) `cc` — CC:Tweaked IPeripheral wrapper (covers ~100+ mods)
-     *   3. (future) `caps` — NeoForge capability fallback
+     *   2. Mekanism matrix — must match before the broader machine adapter
+     *   3. Mekanism processing machines — factories + single-slot bases
+     *   4. NeoForge cap fallback — claims ANY BE that exposes IItemHandler
+     *      (vanilla furnace, Iron Furnaces, JumboFurnace, vanilla chests, …),
+     *      treating it as a standard input/output/fuel furnace with vanilla
+     *      SMELTING recipes.
+     *   5. (future) `cc` — CC:Tweaked IPeripheral wrapper (covers ~100+ mods)
      */
-    private val candidateAdapters: List<Pair<String, String>> = listOf(
+    private val candidateAdapters: List<Pair<String?, String>> = listOf(
         "zerocore" to "com.brewingcoder.oc2.block.bridge.adapters.ZeroCoreAdapter",
+        "mekanism" to "com.brewingcoder.oc2.block.bridge.adapters.MekanismMatrixAdapter",
+        "mekanism" to "com.brewingcoder.oc2.block.bridge.adapters.MekanismMachineAdapter",
+        null to "com.brewingcoder.oc2.block.bridge.adapters.NeoForgeCapAdapter",
     )
 
     /** Resolved adapters, computed lazily on first dispatch. */
     private val adapters: List<ProtocolAdapter> by lazy { loadAdapters() }
 
-    fun discover(be: BlockEntity?, face: Direction, name: String, location: Position): BridgePeripheral? {
+    fun discover(be: BlockEntity?, face: Direction, name: String, data: String, location: Position): BridgePeripheral? {
         if (be == null) return null
         for (adapter in adapters) {
-            if (adapter.canHandle(be, face)) return adapter.wrap(be, face, name, location)
+            if (adapter.canHandle(be, face)) return adapter.wrap(be, face, name, data, location)
         }
         // Quiet by default — peripheral.find can run every tick. Devs use BridgePart's
         // NonePeripheral.target to see what BE is adjacent without log spam.
@@ -66,7 +78,7 @@ object BridgeDispatcher {
     private fun loadAdapters(): List<ProtocolAdapter> {
         val out = mutableListOf<ProtocolAdapter>()
         for ((modId, fqn) in candidateAdapters) {
-            if (!ModList.get().isLoaded(modId)) {
+            if (modId != null && !ModList.get().isLoaded(modId)) {
                 OpenComputers2.LOGGER.debug("BridgeDispatcher: skipping {} (mod {} not loaded)", fqn, modId)
                 continue
             }
@@ -74,7 +86,7 @@ object BridgeDispatcher {
                 val cls = Class.forName(fqn)
                 val instance = cls.getField("INSTANCE").get(null) as ProtocolAdapter
                 out.add(instance)
-                OpenComputers2.LOGGER.info("BridgeDispatcher: registered adapter {} (mod {})", instance.id, modId)
+                OpenComputers2.LOGGER.info("BridgeDispatcher: registered adapter {} (mod {})", instance.id, modId ?: "<core>")
             } catch (t: Throwable) {
                 OpenComputers2.LOGGER.warn("BridgeDispatcher: failed to load $fqn", t)
             }

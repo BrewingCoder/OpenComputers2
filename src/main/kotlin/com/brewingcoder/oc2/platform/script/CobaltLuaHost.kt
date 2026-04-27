@@ -3,11 +3,16 @@ package com.brewingcoder.oc2.platform.script
 import com.brewingcoder.oc2.platform.os.ShellOutput
 import com.brewingcoder.oc2.platform.peripheral.BlockPeripheral
 import com.brewingcoder.oc2.platform.peripheral.BridgePeripheral
+import com.brewingcoder.oc2.platform.peripheral.CrafterPeripheral
+import com.brewingcoder.oc2.platform.peripheral.MachineCrafterPeripheral
 import com.brewingcoder.oc2.platform.peripheral.EnergyPeripheral
 import com.brewingcoder.oc2.platform.peripheral.FluidPeripheral
 import com.brewingcoder.oc2.platform.peripheral.InventoryPeripheral
 import com.brewingcoder.oc2.platform.peripheral.MonitorPeripheral
 import com.brewingcoder.oc2.platform.peripheral.RedstonePeripheral
+import com.brewingcoder.oc2.platform.recipes.InventoryApi
+import com.brewingcoder.oc2.platform.recipes.RecipeApi
+import com.brewingcoder.oc2.platform.recipes.RecipeCrafter
 import com.brewingcoder.oc2.platform.storage.StorageException
 import com.brewingcoder.oc2.platform.storage.WritableMount
 import org.squiddev.cobalt.Constants
@@ -45,7 +50,7 @@ import java.io.ByteArrayInputStream
  */
 class CobaltLuaHost : ScriptHost {
 
-    override fun eval(source: String, chunkName: String, env: ScriptEnv): ScriptResult {
+    override fun eval(source: String, chunkName: String, env: ScriptEnv, scriptArgs: List<String>): ScriptResult {
         val state = LuaState()
         return try {
             // 0.9.6 changed standardGlobals to void; globals are retrieved via state.globals()
@@ -54,6 +59,8 @@ class CobaltLuaHost : ScriptHost {
             globals.rawset("print", makePrintFunction(env.out))
             globals.rawset("fs", makeFsTable(env.mount, env.cwd))
             globals.rawset("peripheral", makePeripheralTable(env))
+            globals.rawset("inventory", makeInventoryTable(env))
+            globals.rawset("recipes", makeRecipesTable(env, state))
             globals.rawset("colors", makeColorsTable())
             globals.rawset("network", makeNetworkTable(env))
             globals.rawset("json", makeJsonTable())
@@ -70,7 +77,21 @@ class CobaltLuaHost : ScriptHost {
             installRequire(globals, state, env)
             val bytes = source.toByteArray(Charsets.UTF_8)
             val chunk = LoadState.load(state, ByteArrayInputStream(bytes), "@$chunkName", globals)
-            LuaThread.runMain(state, chunk)
+            // Forward CLI args to the script's main chunk as varargs — `local a = {...}`.
+            // Also expose them on `arg` (Lua convention: `arg[1]`, `arg[2]`, ...) so scripts
+            // that prefer that idiom over varargs can read them too.
+            val varargs: Varargs = if (scriptArgs.isEmpty()) {
+                Constants.NONE
+            } else {
+                val vs: List<LuaValue> = scriptArgs.map { ValueFactory.valueOf(it) }
+                ValueFactory.varargsOf(vs)
+            }
+            if (scriptArgs.isNotEmpty()) {
+                val argTable = LuaTable()
+                for ((i, s) in scriptArgs.withIndex()) argTable.rawset(i + 1, ValueFactory.valueOf(s))
+                globals.rawset("arg", argTable)
+            }
+            LuaThread.runMain(state, chunk, varargs)
             ScriptResult(ok = true, errorMessage = null)
         } catch (e: CompileException) {
             ScriptResult(ok = false, errorMessage = cleanError("compile error", e.message))
@@ -198,7 +219,12 @@ class CobaltLuaHost : ScriptHost {
         val t = LuaTable()
         t.rawset("find", fn { args ->
             val kind = args.arg(1).toString()
-            val p = env.findPeripheral(kind) ?: return@fn Constants.NIL
+            val name = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toString() else null
+            val p = if (name != null) {
+                env.listPeripherals(kind).firstOrNull { it.name == name }
+            } else {
+                env.findPeripheral(kind)
+            } ?: return@fn Constants.NIL
             wrapPeripheral(p)
         })
         t.rawset("list", fn { args ->
@@ -214,14 +240,21 @@ class CobaltLuaHost : ScriptHost {
     }
 
     private fun wrapPeripheral(p: com.brewingcoder.oc2.platform.peripheral.Peripheral): LuaValue {
+        // Order matters: BridgePeripheral wins over InventoryPeripheral so dual-natured
+        // peripherals (Mek factory bridge that also exposes IItemHandler) get the bridge
+        // surface AND the inventory surface (wrapBridge layers the latter on for free
+        // when `p is InventoryPeripheral`). Otherwise the bridge handle would have only
+        // size/list/push/pull and miss call/methods/target/protocol.
         val t = when (p) {
             is MonitorPeripheral -> wrapMonitor(p)
+            is BridgePeripheral -> wrapBridge(p)
             is InventoryPeripheral -> wrapInventory(p)
+            is CrafterPeripheral -> wrapCrafter(p)
+            is MachineCrafterPeripheral -> wrapMachineCrafter(p)
             is RedstonePeripheral -> wrapRedstone(p)
             is FluidPeripheral -> wrapFluid(p)
             is EnergyPeripheral -> wrapEnergy(p)
             is BlockPeripheral -> wrapBlock(p)
-            is BridgePeripheral -> wrapBridge(p)
             else -> return Constants.NIL
         }
         // Stamp getLocation() onto every peripheral table — returns x, y, z as three values.
@@ -235,6 +268,10 @@ class CobaltLuaHost : ScriptHost {
                 )
             }
         })
+        // Stamp `data` — the free-form user text from the part config GUI.
+        // Scripts read it as `peripheral.data`. Snapshot at wrap time; scripts
+        // re-fetch via `peripheral.find()` to pick up live edits.
+        t.rawset("data", ValueFactory.valueOf(p.data))
         return t
     }
 
@@ -258,10 +295,23 @@ class CobaltLuaHost : ScriptHost {
             val name = args.arg(1).toString()
             val callArgs = mutableListOf<Any?>()
             // Lua args are 1-indexed; arg 1 is the method name, 2..N are the call payload.
-            for (i in 2..args.count()) callArgs.add(fromLuaValue(args.arg(i)))
+            // Resolve LuaTable args back to InventoryPeripheral instances first so a
+            // bridge method like `push(slot, chest)` receives the actual peripheral
+            // reference (not a stringified Map). Falls back to fromLuaValue for plain
+            // tables / primitives.
+            for (i in 2..args.count()) {
+                val a = args.arg(i)
+                val resolved = (a as? LuaTable)?.let { invHandles[it] }
+                callArgs.add(resolved ?: fromLuaValue(a))
+            }
             toLuaValue(b.call(name, callArgs))
         })
         t.rawset("describe", method(t) { toLuaValue(b.describe()) })
+        // Dual-natured peripherals (e.g. Mek factory bridge that ALSO exposes an
+        // IItemHandler) get the standard inventory surface layered on top of the
+        // bridge surface — so scripts can do `chest:push(slot, smelter)` AND
+        // `smelter:push(slot, chest)` without knowing the smelter is a bridge.
+        if (b is InventoryPeripheral) decorateInventoryMethods(t, b)
         return t
     }
 
@@ -596,15 +646,43 @@ class CobaltLuaHost : ScriptHost {
         else -> ValueFactory.valueOf(v.toString())
     }
 
-    /** Inverse of [toLuaValue] — extract a primitive from a Lua arg for queueEvent. */
+    /**
+     * Inverse of [toLuaValue] — extract a Java value from a Lua arg.
+     *
+     * **Numbers are always [Double]**, never auto-narrowed to Int. This matches
+     * CC:T's `Object[]` convention on bridge/peripheral calls: mod peripherals
+     * (ZeroCore's `ComputerPeripheral`, CC:T `IPeripheral`) dispatch reflectively
+     * and cast each arg to `Double`, so sending an `Integer` triggers a silent
+     * `ClassCastException` → null return (looks like the call "succeeded" but
+     * did nothing). Regression: rod-setters on ER2 reactors silently no-op'd
+     * with `ok=true` until this was fixed.
+     *
+     * **Tables become `Map<Any, Any?>`** with Lua's native keys preserved
+     * (numeric keys kept as Double). CC:T does the same — peripheral APIs that
+     * take an "array of levels" expect a map with Double keys 1..N, not a Java
+     * array or a stringified table handle.
+     */
     private fun fromLuaValue(v: LuaValue): Any? = when {
         v.isNil() -> null
         v.type() == Constants.TBOOLEAN -> v.toBoolean()
-        v.isNumber() -> {
-            val d = v.toDouble()
-            if (d.isFinite() && d == d.toLong().toDouble()) d.toLong().toInt() else d
-        }
+        v.isNumber() -> v.toDouble()
+        v.type() == Constants.TSTRING -> v.toString()
+        v.type() == Constants.TTABLE -> luaTableToMap(v as LuaTable)
         else -> v.toString()
+    }
+
+    private fun luaTableToMap(t: LuaTable): Map<Any, Any?> {
+        val out = linkedMapOf<Any, Any?>()
+        var k: LuaValue = Constants.NIL
+        while (true) {
+            val pair = t.next(k)
+            val nextKey = pair.arg(1)
+            if (nextKey.isNil()) break
+            val jKey: Any = if (nextKey.isNumber()) nextKey.toDouble() else nextKey.toString()
+            out[jKey] = fromLuaValue(pair.arg(2))
+            k = nextKey
+        }
+        return out
     }
 
     private fun makeJsonTable(): LuaTable {
@@ -914,7 +992,103 @@ class CobaltLuaHost : ScriptHost {
         val t = LuaTable()
         t.rawset("kind", ValueFactory.valueOf(inv.kind))
         t.rawset("name", ValueFactory.valueOf(inv.name))
-        // Stash the native handle so push/pull can resolve "the other end" back to a Peripheral.
+        decorateInventoryMethods(t, inv)
+        return t
+    }
+
+    /**
+     * Crafter surface: `size()` → Int, `list()` → array of card snapshots,
+     * `craft(slot, count, source)` → number of crafts that completed. The
+     * source must be an InventoryPeripheral table produced by
+     * `peripheral.find` / `inventory.list` etc. — resolved via [invHandles].
+     *
+     * Card snapshots: { slot, output (string|nil), outputCount }.
+     * Empty slots come back as nil.
+     */
+    private fun wrapCrafter(c: CrafterPeripheral): LuaTable {
+        val t = LuaTable()
+        t.rawset("kind", ValueFactory.valueOf(c.kind))
+        t.rawset("name", ValueFactory.valueOf(c.name))
+        t.rawset("size", method(t) { ValueFactory.valueOf(c.size()) })
+        t.rawset("list", method(t) {
+            val arr = LuaTable()
+            for ((i, snap) in c.list().withIndex()) {
+                if (snap == null) {
+                    arr.rawset(i + 1, Constants.NIL)
+                } else {
+                    val o = LuaTable()
+                    o.rawset("slot", ValueFactory.valueOf(snap.slot))
+                    o.rawset("output", snap.output?.let { ValueFactory.valueOf(it) } ?: Constants.NIL)
+                    o.rawset("outputCount", ValueFactory.valueOf(snap.outputCount))
+                    arr.rawset(i + 1, o)
+                }
+            }
+            arr
+        })
+        t.rawset("craft", method(t) { args ->
+            val slot = args.arg(1).toInteger().toInt()
+            val count = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else 1
+            val sourceTable = args.arg(3) as? LuaTable
+            val source = sourceTable?.let { invHandles[it] }
+                ?: throw LuaError("crafter.craft: source must be an inventory peripheral handle")
+            ValueFactory.valueOf(c.craft(slot, count, source))
+        })
+        t.rawset("adjacentBlock", method(t) {
+            c.adjacentBlock()?.let { ValueFactory.valueOf(it) } ?: Constants.NIL
+        })
+        return t
+    }
+
+    private fun wrapMachineCrafter(c: MachineCrafterPeripheral): LuaTable {
+        val t = LuaTable()
+        t.rawset("kind", ValueFactory.valueOf(c.kind))
+        t.rawset("name", ValueFactory.valueOf(c.name))
+        t.rawset("size", method(t) { ValueFactory.valueOf(c.size()) })
+        t.rawset("list", method(t) {
+            val arr = LuaTable()
+            for ((i, snap) in c.list().withIndex()) {
+                if (snap == null) {
+                    arr.rawset(i + 1, Constants.NIL)
+                } else {
+                    val o = LuaTable()
+                    o.rawset("slot", ValueFactory.valueOf(snap.slot))
+                    o.rawset("output", snap.output?.let { ValueFactory.valueOf(it) } ?: Constants.NIL)
+                    o.rawset("outputCount", ValueFactory.valueOf(snap.outputCount))
+                    o.rawset("fluidIn", snap.fluidIn?.let { ValueFactory.valueOf(it) } ?: Constants.NIL)
+                    o.rawset("fluidInMb", ValueFactory.valueOf(snap.fluidInMb))
+                    o.rawset("blocking", ValueFactory.valueOf(snap.blocking))
+                    arr.rawset(i + 1, o)
+                }
+            }
+            arr
+        })
+        t.rawset("craft", method(t) { args ->
+            val slot = args.arg(1).toInteger().toInt()
+            val count = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else 1
+            val sourceTable = args.arg(3) as? LuaTable
+            val source = sourceTable?.let { invHandles[it] }
+                ?: throw LuaError("machine_crafter.craft: source must be an inventory peripheral handle")
+            val fluidArg = args.arg(4)
+            val fluidSource = if (fluidArg.isNil()) null
+                              else (fluidArg as? LuaTable)?.let { fluidHandles[it] }
+            ValueFactory.valueOf(c.craft(slot, count, source, fluidSource))
+        })
+        t.rawset("adjacentBlock", method(t) {
+            c.adjacentBlock()?.let { ValueFactory.valueOf(it) } ?: Constants.NIL
+        })
+        return t
+    }
+
+    /**
+     * Stamp the InventoryPeripheral surface (size/getItem/list/find/destroy/
+     * push/pull) onto an existing LuaTable. Used by [wrapInventory] AND by
+     * [wrapBridge] when the underlying peripheral implements both interfaces
+     * (e.g. a Mek factory bridge whose IItemHandler is the machine inventory).
+     *
+     * Also registers `t -> inv` in [invHandles] so cross-peripheral push/pull
+     * can resolve the "other end" back to its native peripheral.
+     */
+    private fun decorateInventoryMethods(t: LuaTable, inv: InventoryPeripheral) {
         invHandles[t] = inv
         t.rawset("size", method(t) { ValueFactory.valueOf(inv.size()) })
         t.rawset("getItem", method(t) { args ->
@@ -952,7 +1126,6 @@ class CobaltLuaHost : ScriptHost {
             val targetSlot = if (args.count() >= 4 && !args.arg(4).isNil()) args.arg(4).toInteger().toInt() else null
             ValueFactory.valueOf(inv.pull(source, slot, count, targetSlot))
         })
-        return t
     }
 
     private fun itemSnapshotToTable(s: InventoryPeripheral.ItemSnapshot): LuaTable {
@@ -969,6 +1142,125 @@ class CobaltLuaHost : ScriptHost {
      * reference still earns its keep against long scripts that wrap many invs.
      */
     private val invHandles: java.util.WeakHashMap<LuaTable, InventoryPeripheral> = java.util.WeakHashMap()
+
+    /**
+     * Build the `inventory` global — thin Lua-side projection of [InventoryApi].
+     *
+     *   `inventory.list()`                          → array of inventory handles
+     *   `inventory.find([name])`                    → handle or nil
+     *   `inventory.get(id, count, target [, from])` → moved
+     *   `inventory.drain(machine [, id [, to]])`    → moved
+     *   `inventory.put(id, count, source, target)`  → moved
+     *
+     * `target`/`source`/`machine` arguments are inventory handles produced by
+     * `peripheral.find` / `inventory.list` etc. — resolved back to the native
+     * impl via [invHandles]. `from`/`to` accept arrays of handles (Lua tables).
+     */
+    private fun makeInventoryTable(env: ScriptEnv): LuaTable {
+        val api = InventoryApi(env)
+        val t = LuaTable()
+        t.rawset("list", fn {
+            val arr = LuaTable()
+            for ((i, p) in api.list().withIndex()) {
+                val wrapped = wrapPeripheral(p)
+                if (wrapped !== Constants.NIL) arr.rawset(i + 1, wrapped)
+            }
+            arr
+        })
+        t.rawset("find", fn { args ->
+            val name = if (args.count() >= 1 && !args.arg(1).isNil()) args.arg(1).toString() else null
+            val p = api.find(name) ?: return@fn Constants.NIL
+            wrapPeripheral(p)
+        })
+        t.rawset("get", fn { args ->
+            val itemId = args.arg(1).toString()
+            val count = args.arg(2).toInteger().toInt()
+            val target = (args.arg(3) as? LuaTable)?.let { invHandles[it] }
+                ?: return@fn ValueFactory.valueOf(0)
+            // `from` nil (or missing) → use the API's default source ranking. Only
+            // a present-and-valid array overrides.
+            val from = readInventoryArray(args.arg(4))
+            ValueFactory.valueOf(api.get(itemId, count, target, from))
+        })
+        t.rawset("drain", fn { args ->
+            val machine = (args.arg(1) as? LuaTable)?.let { invHandles[it] }
+                ?: return@fn ValueFactory.valueOf(0)
+            val itemId = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toString() else null
+            val to = readInventoryArray(args.arg(3))
+            ValueFactory.valueOf(api.drain(machine, itemId, to))
+        })
+        t.rawset("put", fn { args ->
+            val itemId = args.arg(1).toString()
+            val count = args.arg(2).toInteger().toInt()
+            val source = (args.arg(3) as? LuaTable)?.let { invHandles[it] }
+                ?: return@fn ValueFactory.valueOf(0)
+            val target = (args.arg(4) as? LuaTable)?.let { invHandles[it] }
+                ?: return@fn ValueFactory.valueOf(0)
+            ValueFactory.valueOf(api.put(itemId, count, source, target))
+        })
+        return t
+    }
+
+    /** Read a Lua array of inventory handles into a List. Returns null if a non-handle slipped in. */
+    private fun readInventoryArray(v: LuaValue): List<InventoryPeripheral>? {
+        if (v.isNil()) return null
+        val tbl = v as? LuaTable ?: return null
+        val out = mutableListOf<InventoryPeripheral>()
+        var i = 1
+        while (true) {
+            val entry = tbl.rawget(i)
+            if (entry.isNil()) break
+            val inv = (entry as? LuaTable)?.let { invHandles[it] } ?: return null
+            out.add(inv)
+            i++
+        }
+        return out
+    }
+
+    /**
+     * Build `recipes` as a callable table:
+     *   - `recipes("minecraft:iron_ingot")` (or equivalent `recipes.query(id)`) — query
+     *     bridge producers/consumers/inputs/outputs (existing behavior).
+     *   - `recipes.craft(itemId [, count])` — auto-discovery craft: walks installed
+     *     `machine_crafter` / `crafter` peripherals, finds the card stamping [itemId],
+     *     auto-sources ingredients from any inventory on the channel, returns the
+     *     expected number of items produced (rounded up to whole cycles).
+     */
+    private fun makeRecipesTable(env: ScriptEnv, state: LuaState): LuaTable {
+        val runQuery: (String) -> LuaTable = { itemId ->
+            val q = RecipeApi(env).query(itemId)
+            val t = LuaTable()
+            t.rawset("itemId", ValueFactory.valueOf(itemId))
+            val producers = LuaTable()
+            for ((i, b) in q.producers.withIndex()) producers.rawset(i + 1, wrapPeripheral(b))
+            t.rawset("producers", producers)
+            val consumers = LuaTable()
+            for ((i, b) in q.consumers.withIndex()) consumers.rawset(i + 1, wrapPeripheral(b))
+            t.rawset("consumers", consumers)
+            val inputs = LuaTable()
+            for ((i, id) in q.inputs.withIndex()) inputs.rawset(i + 1, ValueFactory.valueOf(id))
+            t.rawset("inputs", inputs)
+            val outputs = LuaTable()
+            for ((i, id) in q.outputs.withIndex()) outputs.rawset(i + 1, ValueFactory.valueOf(id))
+            t.rawset("outputs", outputs)
+            t
+        }
+
+        val ns = LuaTable()
+        ns.rawset("query", fn { args -> runQuery(args.arg(1).toString()) })
+        ns.rawset("craft", fn { args ->
+            val itemId = args.arg(1).toString()
+            val count = if (args.count() >= 2 && !args.arg(2).isNil()) args.arg(2).toInteger().toInt() else 1
+            ValueFactory.valueOf(RecipeCrafter(env).craft(itemId, count))
+        })
+
+        // __call metamethod preserves the legacy `recipes("id")` query syntax.
+        // Cobalt invokes __call with `(self, ...)`, so the user's id is arg(2).
+        val mt = LuaTable()
+        mt.rawset("__call", fn { args -> runQuery(args.arg(2).toString()) })
+        ns.setMetatable(state, mt)
+        return ns
+    }
 
     /** Best-effort `tostring()` for arbitrary [LuaValue]s. Does not invoke `__tostring` metamethods. */
     private fun luaToString(v: LuaValue): String = when {

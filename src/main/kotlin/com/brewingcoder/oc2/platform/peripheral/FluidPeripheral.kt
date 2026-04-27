@@ -8,7 +8,7 @@ package com.brewingcoder.oc2.platform.peripheral
 interface FluidPeripheral : Peripheral {
     override val kind: String get() = "fluid"
 
-    val name: String
+    override val name: String
 
     /** Number of internal tanks. */
     fun tanks(): Int

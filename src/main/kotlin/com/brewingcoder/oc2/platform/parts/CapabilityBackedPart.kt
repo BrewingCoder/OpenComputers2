@@ -29,6 +29,7 @@ abstract class CapabilityBackedPart<C : Any>(
 
     override var label: String = ""
     override var channelId: String = DEFAULT_CHANNEL
+    override var data: String = ""
 
     /**
      * Override the side of the adjacent block we read the capability from.
@@ -74,6 +75,7 @@ abstract class CapabilityBackedPart<C : Any>(
         out.putString("channelId", channelId)
         out.putString("accessSide", accessSide)
         out.putString("options", PartOptionsCodec.encode(options))
+        if (data.isNotEmpty()) out.putString("userData", data)
     }
 
     override fun loadNbt(input: Part.NbtReader) {
@@ -84,6 +86,7 @@ abstract class CapabilityBackedPart<C : Any>(
             options.clear()
             options.putAll(PartOptionsCodec.decode(input.getString("options")))
         }
+        data = if (input.has("userData")) input.getString("userData") else ""
     }
 
     companion object {

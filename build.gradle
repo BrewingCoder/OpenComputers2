@@ -90,9 +90,14 @@ neoForge {
             // options.txt overrideWidth/Height isn't honored when MC is launched with these args.
             programArguments.addAll '--width', '1900', '--height', '1280'
 
+            // Bound the JVM heap. Without these, moddev emits no -Xmx and the JVM
+            // default (~25% of system RAM) lets the client balloon past 8 GB and
+            // start paging — visible as constant lag spikes and eventual hangs.
+            jvmArguments.addAll '-Xmx6G', '-Xms2G'
+
             // Auto-load the W3 test world so dev iterations skip the title screen.
             // Comment out to launch into the title screen instead.
-            programArguments.addAll '--quickPlaySingleplayer', 'W3'
+            // programArguments.addAll '--quickPlaySingleplayer', 'W3'
         }
 
         server {
@@ -162,6 +167,13 @@ repositories {
         url = 'https://maven.squiddev.cc'
         content { includeGroup "cc.tweaked" }
     }
+    // BlameJared maven — hosts JEI (Just Enough Items) artifacts for compileOnly
+    // recipe-transfer integration. JEI itself is a soft-dep at runtime.
+    maven {
+        name = 'BlameJared (JEI)'
+        url = 'https://maven.blamejared.com'
+        content { includeGroup "mezz.jei" }
+    }
 }
 
 dependencies {
@@ -195,6 +207,13 @@ dependencies {
     shade 'org.mozilla:rhino:1.7.15'
     compileOnly 'org.mozilla:rhino:1.7.15'
     testRuntimeOnly 'org.mozilla:rhino:1.7.15'
+
+    // JEI — soft dependency. compileOnly for the @JeiPlugin handler; localRuntime so
+    // the dev client gets JEI in-game (recipe browser + Move Items button) without
+    // forcing JEI on production users. Mod boots fine with JEI absent.
+    compileOnly "mezz.jei:jei-1.21.1-common-api:${jei_version}"
+    compileOnly "mezz.jei:jei-1.21.1-neoforge-api:${jei_version}"
+    localRuntime "mezz.jei:jei-1.21.1-neoforge:${jei_version}"
 
     // Test stack — JUnit5 platform + Kotest assertions (cleaner than vanilla JUnit assertions).
     // See docs/11-engineering-rules.md — Rule A demands tests, Rule B demands testable seams.

@@ -37,6 +37,7 @@ class ScriptRunHandle(
     private val peripheralFinder: (String) -> Peripheral?,
     private val peripheralLister: (String?) -> List<Peripheral> = { emptyList() },
     private val networkAccess: NetworkAccess = NetworkAccess.NOOP,
+    private val scriptArgs: List<String> = emptyList(),
 ) {
 
     private val outputQueue: ConcurrentLinkedQueue<OutputItem> = ConcurrentLinkedQueue()
@@ -88,7 +89,7 @@ class ScriptRunHandle(
         val t = Thread({
             ScriptCallerContext.set(pid, chunkName)
             try {
-                val r = host.eval(source, chunkName, makeEnv())
+                val r = host.eval(source, chunkName, makeEnv(), scriptArgs)
                 // If the kill flag was raised, the eval likely terminated via an
                 // InterruptedException wrapped in a LuaError / RhinoError. Override
                 // the noisy "lua error: ... InterruptedException" with a clean signal.

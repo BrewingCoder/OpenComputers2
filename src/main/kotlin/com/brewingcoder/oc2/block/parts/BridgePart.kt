@@ -28,6 +28,7 @@ class BridgePart : Part {
     override var label: String = ""
     override var channelId: String = "default"
     override val options: MutableMap<String, String> = mutableMapOf()
+    override var data: String = ""
 
     private var host: PartHost? = null
 
@@ -49,8 +50,8 @@ class BridgePart : Part {
         val be = h.adjacentBlockEntity() as? BlockEntity
         // Resolve face from PartHost.faceId — kept as a string in platform layer.
         val face = Direction.byName(h.faceId) ?: return null
-        return BridgeDispatcher.discover(be, face, label, h.location)
-            ?: NonePeripheral(label, beTarget(be), h.location)
+        return BridgeDispatcher.discover(be, face, label, data, h.location)
+            ?: NonePeripheral(label, beTarget(be), h.location, data)
     }
 
     /** Diagnostic identifier for the [NonePeripheral] target field — surfaces the BE class name so developers can see what protocol they need to add an adapter for. */
@@ -62,6 +63,7 @@ class BridgePart : Part {
         out.putString("label", label)
         out.putString("channelId", channelId)
         out.putString("options", com.brewingcoder.oc2.platform.parts.PartOptionsCodec.encode(options))
+        if (data.isNotEmpty()) out.putString("userData", data)
     }
 
     override fun loadNbt(input: Part.NbtReader) {
@@ -71,10 +73,16 @@ class BridgePart : Part {
             options.clear()
             options.putAll(com.brewingcoder.oc2.platform.parts.PartOptionsCodec.decode(input.getString("options")))
         }
+        data = if (input.has("userData")) input.getString("userData") else ""
     }
 
     /** Stub returned when no adapter claims the adjacent BE. Lets scripts probe without nil. */
-    private class NonePeripheral(override val name: String, override val target: String, override val location: com.brewingcoder.oc2.platform.Position) : BridgePeripheral {
+    private class NonePeripheral(
+        override val name: String,
+        override val target: String,
+        override val location: com.brewingcoder.oc2.platform.Position,
+        override val data: String,
+    ) : BridgePeripheral {
         override val protocol: String = "none"
         override fun methods(): List<String> = emptyList()
         override fun call(method: String, args: List<Any?>): Any? = null

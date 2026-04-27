@@ -17,5 +17,7 @@ object ModParts {
         PartRegistry.register(EnergyPart.TYPE)
         PartRegistry.register(BlockPart.TYPE)
         PartRegistry.register(BridgePart.TYPE)
+        PartRegistry.register(CrafterPart.TYPE)
+        PartRegistry.register(MachineCrafterPart.TYPE)
     }
 }

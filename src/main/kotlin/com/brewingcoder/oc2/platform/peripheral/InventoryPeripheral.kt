@@ -14,7 +14,7 @@ interface InventoryPeripheral : Peripheral {
     override val kind: String get() = "inventory"
 
     /** Stable display name — auto-generated (`inv_north_3`) unless the player labeled it. */
-    val name: String
+    override val name: String
 
     /** Total slot count of the wrapped inventory. */
     fun size(): Int

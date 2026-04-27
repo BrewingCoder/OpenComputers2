@@ -76,6 +76,36 @@ interface PartHost {
      * thread (which the Adapter BE marshals).
      */
     fun adjacentBlockEntity(): Any?
+
+    /**
+     * Registry id of the adjacent block ("minecraft:crafting_table" etc.).
+     * Lightweight — does NOT touch the BE or its NBT. Returns null when off-world
+     * or off-thread. Used by parts whose peripheral resolution depends on the
+     * exact adjacent block kind (CrafterPart wants only crafting tables).
+     */
+    fun adjacentBlockId(): String?
+
+    /**
+     * The server [net.minecraft.world.level.Level] hosting this part. Returned
+     * as [Any]? so this interface stays MC-import-free; concrete consumers cast
+     * to `ServerLevel`. Null when off-world (chunk unloaded etc).
+     *
+     * Distinct from [adjacentBlockEntity] — the latter returns null for blocks
+     * that have no BlockEntity (e.g. vanilla `crafting_table`), whereas this
+     * accessor stays valid as long as the adapter is loaded. Use this when you
+     * need recipe-manager / registry access regardless of the neighbor's BE.
+     */
+    fun serverLevel(): Any? = null
+
+    /**
+     * Whether the adjacent block carries [tagId] (a namespaced tag id like
+     * `c:player_workstations/crafting_tables`). Lets parts gate on tags
+     * instead of exact block ids, so modded equivalents (e.g. `craftingstation:
+     * crafting_station`) are accepted automatically when the mod tags itself.
+     *
+     * Returns false when off-world or off-thread.
+     */
+    fun adjacentBlockHasTag(tagId: String): Boolean = false
 }
 
 /**

@@ -10,7 +10,7 @@ package com.brewingcoder.oc2.platform.peripheral
 interface BlockPeripheral : Peripheral {
     override val kind: String get() = "block"
 
-    val name: String
+    override val name: String
 
     /** Snapshot of the adjacent block. Returns null only if the host is somehow off-world. */
     fun read(): BlockReadout?

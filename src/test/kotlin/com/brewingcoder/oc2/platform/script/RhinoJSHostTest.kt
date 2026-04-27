@@ -345,4 +345,30 @@ class RhinoJSHostTest {
         mon.log shouldBe listOf("write(hello)", "setCursorPos(3,5)", "clear()")
         out.lines shouldBe listOf("20 10")
     }
+
+    @Test
+    fun `script args are forwarded on the args global array`() {
+        val out = CapturingOut()
+        val r = host().eval(
+            source = "print(args.length + ' ' + args[0] + ' ' + args[1]);",
+            chunkName = "args.js",
+            env = FakeEnv(mount(), "", out),
+            scriptArgs = listOf("minecraft:raw_iron", "64"),
+        )
+        r.ok shouldBe true
+        out.lines shouldBe listOf("2 minecraft:raw_iron 64")
+    }
+
+    @Test
+    fun `empty script args produces a defined zero-length args array`() {
+        val out = CapturingOut()
+        val r = host().eval(
+            source = "print(args.length + ' ' + (typeof args));",
+            chunkName = "args.js",
+            env = FakeEnv(mount(), "", out),
+            scriptArgs = emptyList(),
+        )
+        r.ok shouldBe true
+        out.lines shouldBe listOf("0 object")
+    }
 }

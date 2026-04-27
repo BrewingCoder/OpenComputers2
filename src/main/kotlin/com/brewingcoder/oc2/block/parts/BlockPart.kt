@@ -21,6 +21,7 @@ class BlockPart : Part {
     override var label: String = ""
     override var channelId: String = "default"
     override val options: MutableMap<String, String> = mutableMapOf()
+    override var data: String = ""
 
     /** Last known host — captured on attach so the wrapper stays usable across calls. */
     private var host: PartHost? = null
@@ -40,13 +41,14 @@ class BlockPart : Part {
 
     override fun asPeripheral(): Peripheral? {
         val h = host ?: return null
-        return Wrapper(h, label)
+        return Wrapper(h, label, data)
     }
 
     override fun saveNbt(out: Part.NbtWriter) {
         out.putString("label", label)
         out.putString("channelId", channelId)
         out.putString("options", com.brewingcoder.oc2.platform.parts.PartOptionsCodec.encode(options))
+        if (data.isNotEmpty()) out.putString("userData", data)
     }
 
     override fun loadNbt(input: Part.NbtReader) {
@@ -56,11 +58,13 @@ class BlockPart : Part {
             options.clear()
             options.putAll(com.brewingcoder.oc2.platform.parts.PartOptionsCodec.decode(input.getString("options")))
         }
+        data = if (input.has("userData")) input.getString("userData") else ""
     }
 
     private class Wrapper(
         private val host: PartHost,
         override val name: String,
+        override val data: String,
     ) : BlockPeripheral {
         override val location: com.brewingcoder.oc2.platform.Position get() = host.location
         override fun read(): BlockPeripheral.BlockReadout? = host.readAdjacentBlock()
