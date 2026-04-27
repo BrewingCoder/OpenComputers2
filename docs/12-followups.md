@@ -293,6 +293,31 @@ Other adapters (CC, ID, NeoForge caps) deferred.
 - 2026-04-27: Disk image plumbing — sparse 256 MB virtio-blk per BE,
   UART16550A standard-output + host-side capture ring,
   `platform/vm/{ControlPlaneDisk,ConsoleCapture,ControlPlaneVm}`. 14 new tests.
+- 2026-04-27: Singleton-per-player ownership registry —
+  `platform/control/ControlPlaneRegistry` + `OC2ServerContext` integration
+  rejects a second placement; Cloud Card item still pending.
+- 2026-04-27: Power-state toggle — sneak right-click flips ON/OFF and
+  closes the live VM on power-off; `tick()` is a no-op while powered off.
+- 2026-04-27: Peripheral binding — `peripheral.find("controlplane")` from a
+  Computer on the same channel; Lua + JS surfaces (`cycles`, `isPowered`,
+  `togglePower`, `consoleTail`, `consoleClear`, `diskCapacity`, `describe`).
+- 2026-04-27: Boot path — `ControlPlaneBoot.loadBytes` writes a firmware
+  image into RAM at `defaultProgramStart`, plus a 16-byte RV64 stub that
+  proves end-to-end execution by writing a single byte to UART16550A and
+  jumping to itself.
+- 2026-04-27: VM snapshot/restore via Ceres — `ControlPlaneVm.snapshot()`
+  round-trips `R5Board` state through `BinarySerialization`. Needed
+  `SednaSerializerRegistration` to register Sedna's hand-rolled serializers
+  (R5CPUSerializer fills the immutable `cpu` field in place) AND set
+  `li.cil.ceres.disableCodeGen=true` because Ceres' CompiledSerializer
+  uses `sun.misc.Unsafe.defineAnonymousClass` (removed in Java 17+).
+- 2026-04-27: Chunk-unload pause/resume — BE writes the snapshot to
+  `<world>/oc2/vm-snapshots/<id>.snap` on `setRemoved` + `togglePower`-off,
+  restores on next `bootVm`. Atomic `.tmp` + rename via `Files.move` so a
+  mid-write crash leaves either the previous good snapshot or no file. A
+  failed read or restore logs and falls through to a fresh boot — corrupt
+  snapshots can never brick the block. **Supersedes the "chunk-unload pause/
+  resume" section below.**
 
 ### Next — kernel + initramfs (no firmware = no boot)
 
@@ -341,9 +366,8 @@ Once the bridge works, the `OC2ControlPlaneRegistry` becomes load-bearing
 (rejects placement if the player already owns one). Cloud Card is a new
 Tier-1 part item that opts a Computer into being routed by the VM.
 
-### Then — chunk-unload pause/resume
+### ~~Then — chunk-unload pause/resume~~ — SHIPPED 2026-04-27
 
-Sedna is fully serializable. Snapshot the `R5Board` to NBT (or a
-side-file under `<world>/oc2/vm-snapshots/<be-uuid>.bin`) on chunk
-unload and restore on load. Today the VM is rebuilt from scratch on
-each chunk reload, which is fine while there's no boot.
+See the Shipped list above. Snapshot lives at
+`<world>/oc2/vm-snapshots/<id>.snap` (paired with the disk image),
+written via `ControlPlaneSnapshotStore` on chunk unload + power-off.

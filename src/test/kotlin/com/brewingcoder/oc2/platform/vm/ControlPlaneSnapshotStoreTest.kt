@@ -3,6 +3,7 @@ package com.brewingcoder.oc2.platform.vm
 import io.kotest.matchers.booleans.shouldBeFalse
 import io.kotest.matchers.booleans.shouldBeTrue
 import io.kotest.matchers.collections.shouldContainExactly
+import io.kotest.matchers.longs.shouldBeGreaterThan
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
@@ -83,6 +84,56 @@ class ControlPlaneSnapshotStoreTest {
     }
 
     @Test
+    fun `writeWith streams bytes atomically`(@TempDir dir: File) {
+        val root = File(dir, "snaps")
+        val store = ControlPlaneSnapshotStore(root)
+        store.writeWith("vm-a") { out ->
+            out.write(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8))
+        }
+        store.read("vm-a")?.toList().shouldContainExactly(listOf<Byte>(1, 2, 3, 4, 5, 6, 7, 8))
+        // No leftover .tmp file.
+        root.list()?.toList().shouldContainExactly(listOf("vm-a.snap"))
+    }
+
+    @Test
+    fun `writeWith deletes the tmp file when the body throws`(@TempDir dir: File) {
+        val root = File(dir, "snaps")
+        val store = ControlPlaneSnapshotStore(root)
+        // Pre-populate so we can verify the existing snapshot survives a
+        // failed write — the whole point of writing to .tmp first.
+        store.write("vm-a", byteArrayOf(0xAA.toByte(), 0xBB.toByte()))
+
+        val ex = runCatching {
+            store.writeWith("vm-a") { out ->
+                out.write(0xCC)
+                error("boom")
+            }
+        }.exceptionOrNull()
+        require(ex != null) { "expected the body's exception to propagate" }
+
+        // Original snapshot still on disk.
+        store.read("vm-a")?.toList().shouldContainExactly(listOf<Byte>(0xAA.toByte(), 0xBB.toByte()))
+        // No tmp leak.
+        root.list()?.toList().shouldContainExactly(listOf("vm-a.snap"))
+    }
+
+    @Test
+    fun `readWith returns null when no snapshot exists`(@TempDir dir: File) {
+        val store = ControlPlaneSnapshotStore(File(dir, "snaps"))
+        val result = store.readWith("absent") { _ -> error("body should not run") }
+        result.shouldBeNull()
+    }
+
+    @Test
+    fun `readWith hands a stream of the file contents`(@TempDir dir: File) {
+        val store = ControlPlaneSnapshotStore(File(dir, "snaps"))
+        val payload = byteArrayOf(10, 20, 30, 40)
+        store.write("vm-a", payload)
+        val read = store.readWith("vm-a") { it.readBytes() }
+        read?.toList().shouldContainExactly(payload.toList())
+    }
+
+    @Test
     fun `round-trips a real VM snapshot`(@TempDir dir: File) {
         // End-to-end smoke: take a real Sedna snapshot, persist via the store,
         // restore through the VM ctor — proves the store doesn't mangle bytes
@@ -101,5 +152,33 @@ class ControlPlaneSnapshotStoreTest {
             restored.step(5_000)
             (restored.cycles > before).shouldBeTrue()
         }
+    }
+
+    @Test
+    fun `streaming round-trip via writeWith and readWith resumes the VM`(@TempDir dir: File) {
+        // Mirrors the production BE save path: snapshotTo → writeWith, then
+        // readWith → snapshotStream. Proves the stream-only path is wired
+        // end-to-end without ever materializing the snapshot bytes on heap.
+        val store = ControlPlaneSnapshotStore(File(dir, "snaps"))
+
+        val cyclesAtSnap = ControlPlaneVm(ramBytes = 1 * 1024 * 1024).use { vm ->
+            vm.step(20_000)
+            store.writeWith("vm-a") { out -> vm.snapshotTo(out) }
+            vm.cycles
+        }
+        cyclesAtSnap shouldBeGreaterThan 0L
+
+        val before = store.readWith("vm-a") { stream ->
+            ControlPlaneVm(
+                ramBytes = 1 * 1024 * 1024,
+                snapshotStream = stream,
+            ).use { restored ->
+                val c = restored.cycles
+                restored.step(5_000)
+                (restored.cycles > c).shouldBeTrue()
+                c
+            }
+        }
+        before shouldBe cyclesAtSnap
     }
 }

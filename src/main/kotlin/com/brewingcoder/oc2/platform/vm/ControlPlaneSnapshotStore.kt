@@ -1,6 +1,12 @@
 package com.brewingcoder.oc2.platform.vm
 
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -60,11 +66,53 @@ class ControlPlaneSnapshotStore(private val rootDir: File) {
 
     /**
      * Read the snapshot for [name], or null if absent. Returns the raw bytes;
-     * caller hands them to [ControlPlaneVm]'s `snapshot=` constructor.
+     * caller hands them to [ControlPlaneVm]'s `snapshot=` constructor. Use
+     * [readWith] for the BE save path — it streams without buffering the
+     * full file in memory.
      */
     fun read(name: String): ByteArray? {
         val f = fileFor(name)
         return if (f.isFile) f.readBytes() else null
+    }
+
+    /**
+     * Atomic streaming write. [body] receives an [OutputStream] backed by a
+     * temp file; on successful return the temp is renamed over the final path.
+     * If [body] throws, the temp file is deleted and the previous good
+     * snapshot (if any) is untouched. Callers don't need to handle the
+     * tmp/move dance themselves.
+     */
+    fun writeWith(name: String, body: (OutputStream) -> Unit) {
+        rootDir.mkdirs()
+        val target = fileFor(name)
+        val tmp = File(rootDir, "$name$EXTENSION$TMP_SUFFIX")
+        var ok = false
+        try {
+            BufferedOutputStream(FileOutputStream(tmp)).use { body(it) }
+            ok = true
+        } finally {
+            if (!ok) tmp.delete()
+        }
+        try {
+            Files.move(
+                tmp.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE,
+            )
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    /**
+     * Streaming read. [body] receives an [InputStream] over the snapshot file,
+     * or `null` if no snapshot exists. The stream is closed automatically.
+     */
+    fun <T> readWith(name: String, body: (InputStream) -> T): T? {
+        val f = fileFor(name)
+        if (!f.isFile) return null
+        return BufferedInputStream(FileInputStream(f)).use { body(it) }
     }
 
     /**
@@ -76,6 +124,6 @@ class ControlPlaneSnapshotStore(private val rootDir: File) {
 
     companion object {
         const val EXTENSION: String = ".snap"
-        private const val TMP_SUFFIX: String = ".tmp"
+        const val TMP_SUFFIX: String = ".tmp"
     }
 }

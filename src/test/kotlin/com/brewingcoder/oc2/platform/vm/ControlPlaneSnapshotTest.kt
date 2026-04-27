@@ -101,4 +101,48 @@ class ControlPlaneSnapshotTest {
             a.size shouldBe b.size
         }
     }
+
+    @Test
+    fun `snapshotTo and snapshotStream round-trip is equivalent to ByteArray path`() {
+        // The streaming variants exist so the BE save path doesn't materialize
+        // a 64 MB byte[] for every chunk save. We prove behavioral equivalence
+        // here: write via snapshotTo, restore via snapshotStream, verify the
+        // VM resumes from where it was snapshotted.
+        val uartBase = ControlPlaneVm(ramBytes = 1 * 1024 * 1024).use { it.uartBase }
+        val stub = ControlPlaneBoot.helloUartStub(uartBase, 'Q'.code.toByte())
+
+        val baos = java.io.ByteArrayOutputStream()
+        val cyclesAtSnap = ControlPlaneVm(ramBytes = 1 * 1024 * 1024, bootImage = stub).use { vm ->
+            vm.step(40_000)
+            vm.snapshotTo(baos)
+            vm.cycles
+        }
+        cyclesAtSnap shouldBeGreaterThan 0L
+        baos.size() shouldBeGreaterThan 0
+
+        ControlPlaneVm(
+            ramBytes = 1 * 1024 * 1024,
+            snapshotStream = java.io.ByteArrayInputStream(baos.toByteArray()),
+        ).use { restored ->
+            restored.cycles shouldBeGreaterThanOrEqual cyclesAtSnap
+            val before = restored.cycles
+            restored.step(10_000)
+            restored.cycles shouldBeGreaterThan before
+        }
+    }
+
+    @Test
+    fun `snapshot and snapshotStream are mutually exclusive`() {
+        val snap = ControlPlaneVm(ramBytes = 1 * 1024 * 1024).use { it.snapshot() }
+        val ex = runCatching {
+            ControlPlaneVm(
+                ramBytes = 1 * 1024 * 1024,
+                snapshot = snap,
+                snapshotStream = java.io.ByteArrayInputStream(snap),
+            )
+        }.exceptionOrNull()
+        require(ex is IllegalArgumentException) {
+            "expected IllegalArgumentException, got ${ex?.javaClass?.simpleName}"
+        }
+    }
 }

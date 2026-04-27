@@ -196,43 +196,37 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         val diskFile = resolveDiskFile(serverLevel)
         val identity = vmIdentity(serverLevel)
         val store = snapshotStore(serverLevel)
-        val snapshot = runCatching { store.read(identity) }.getOrElse { ex ->
-            // Stale or partial snapshot file shouldn't brick the BE — log and
-            // fall through to a fresh boot. The bad file stays on disk so an
-            // op can investigate; admins can wipe it manually.
-            OpenComputers2.LOGGER.warn(
-                "control plane @ {} snapshot read failed ({}); booting fresh",
-                blockPos,
-                ex.message,
-            )
-            null
-        }
+        val hasSnapshot = store.exists(identity)
+        // Streaming restore: the constructor reads the InputStream during init
+        // and we hand it back to readWith's auto-close. If the constructor
+        // throws (corrupt snapshot, format drift), readWith returns null
+        // because we threw out — we recover by booting fresh below.
         val v = try {
-            ControlPlaneVm(
-                diskFile = diskFile,
-                diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
-                snapshot = snapshot,
-            )
-        } catch (ex: Exception) {
-            // Restore failed (corrupt snapshot, format drift across mod versions).
-            // Same policy as the read failure: log, leave the bad file alone for
-            // forensics, fall through to a fresh boot.
-            if (snapshot != null) {
-                OpenComputers2.LOGGER.warn(
-                    "control plane @ {} snapshot restore failed ({}); booting fresh",
-                    blockPos,
-                    ex.message,
-                )
+            store.readWith(identity) { stream ->
                 ControlPlaneVm(
                     diskFile = diskFile,
                     diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
+                    snapshotStream = stream,
                 )
-            } else {
-                throw ex
-            }
+            } ?: ControlPlaneVm(
+                diskFile = diskFile,
+                diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
+            )
+        } catch (ex: Exception) {
+            // Stale or corrupt snapshot must not brick the BE. Leave the bad
+            // file alone for forensics; an admin can wipe it manually.
+            OpenComputers2.LOGGER.warn(
+                "control plane @ {} snapshot restore failed ({}); booting fresh",
+                blockPos,
+                ex.message,
+            )
+            ControlPlaneVm(
+                diskFile = diskFile,
+                diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
+            )
         }
         vm = v
-        val origin = if (snapshot != null) "restored" else "fresh"
+        val origin = if (hasSnapshot) "restored" else "fresh"
         OpenComputers2.LOGGER.info(
             "control plane @ {} VM booted ({}): {} (disk={})",
             blockPos,
@@ -253,9 +247,13 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         val v = vm ?: return
         val serverLevel = level as? ServerLevel ?: return
         try {
-            val bytes = v.snapshot()
             val identity = vmIdentity(serverLevel)
-            snapshotStore(serverLevel).write(identity, bytes)
+            // Streaming write: 64 MB of VM state is serialized straight into
+            // the temp file via a buffered FileOutputStream. No 64 MB byte
+            // array on heap.
+            snapshotStore(serverLevel).writeWith(identity) { out ->
+                v.snapshotTo(out)
+            }
         } catch (ex: Exception) {
             OpenComputers2.LOGGER.warn(
                 "control plane @ {} snapshot write failed: {}",

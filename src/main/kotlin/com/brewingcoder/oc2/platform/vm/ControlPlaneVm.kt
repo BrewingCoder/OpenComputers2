@@ -8,7 +8,11 @@ import li.cil.sedna.device.serial.UART16550A
 import li.cil.sedna.device.virtio.VirtIOBlockDevice
 import li.cil.sedna.riscv.R5Board
 import java.io.Closeable
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.nio.ByteBuffer
 
 /**
@@ -36,6 +40,7 @@ class ControlPlaneVm(
     bootImage: ByteArray? = null,
     bootArgs: String? = null,
     snapshot: ByteArray? = null,
+    snapshotStream: InputStream? = null,
 ) : Closeable {
 
     val board: R5Board = R5Board()
@@ -68,7 +73,11 @@ class ControlPlaneVm(
         board.setStandardOutputDevice(uart)
         virtioBlock?.let { board.addDevice(it) }
 
-        if (snapshot != null) {
+        require(!(snapshot != null && snapshotStream != null)) {
+            "snapshot and snapshotStream are mutually exclusive"
+        }
+        val restoring = snapshot != null || snapshotStream != null
+        if (restoring) {
             // Restore path: Ceres overwrites CPU/MMU/RAM/device state in place
             // from the captured snapshot. We deliberately skip initialize() —
             // it would reset the reset vector and clobber the restored PC —
@@ -76,7 +85,16 @@ class ControlPlaneVm(
             // whatever the guest wrote into RAM and the device tree.
             require(bootImage == null) { "bootImage and snapshot are mutually exclusive" }
             require(bootArgs == null) { "bootArgs and snapshot are mutually exclusive" }
-            BinarySerialization.deserialize(ByteBuffer.wrap(snapshot), R5Board::class.java, board)
+            if (snapshot != null) {
+                BinarySerialization.deserialize(ByteBuffer.wrap(snapshot), R5Board::class.java, board)
+            } else {
+                // Stream path. Caller owns the underlying InputStream lifetime —
+                // we don't close it (could be a network stream the caller wants
+                // to keep open after restore, though today it's always a file).
+                val dis = if (snapshotStream is DataInputStream) snapshotStream
+                else DataInputStream(snapshotStream!!)
+                BinarySerialization.deserialize(dis, R5Board::class.java, board)
+            }
         } else {
             // Fresh boot path:
             //  - bootArgs → device tree's `chosen/bootargs`
@@ -112,9 +130,9 @@ class ControlPlaneVm(
      * Sedna stamps on its own classes.
      *
      * Size scales with [ramBytes] — a 64 MB RAM produces a snapshot in the
-     * tens of MB range. Callers should stream this to disk rather than keep
-     * it on the heap (a follow-up commit will add a streaming variant for
-     * the BE save path).
+     * tens of MB range. Convenient for tests; production callers (the BE
+     * save path) should prefer [snapshotTo] which streams directly to disk
+     * without buffering the full state in memory first.
      *
      * The returned array is self-contained; pair it with the same RAM size +
      * disk file at restore time and the VM resumes mid-instruction. The disk
@@ -126,6 +144,18 @@ class ControlPlaneVm(
         val out = ByteArray(buffer.remaining())
         buffer.get(out)
         return out
+    }
+
+    /**
+     * Streaming variant of [snapshot]. Writes directly into [out] via
+     * [DataOutputStream] so a 64 MB VM doesn't materialize a 64 MB
+     * `byte[]` on the heap during the BE save path. Caller owns [out]'s
+     * lifetime — we don't close it (the BE wraps it in a `use { }` block).
+     */
+    fun snapshotTo(out: OutputStream) {
+        val dos = if (out is DataOutputStream) out else DataOutputStream(out)
+        BinarySerialization.serialize(dos, board, R5Board::class.java)
+        dos.flush()
     }
 
     /**
