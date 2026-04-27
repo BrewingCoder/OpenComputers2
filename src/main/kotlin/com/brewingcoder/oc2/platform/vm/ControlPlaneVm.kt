@@ -31,6 +31,8 @@ class ControlPlaneVm(
     diskFile: File? = null,
     diskSizeBytes: Long = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
     val consoleCapacity: Int = ConsoleCapture.DEFAULT_CAPACITY,
+    bootImage: ByteArray? = null,
+    bootArgs: String? = null,
 ) : Closeable {
 
     val board: R5Board = R5Board()
@@ -46,12 +48,27 @@ class ControlPlaneVm(
     /** Capacity of the attached disk in bytes, or 0 if no disk is attached. */
     val diskCapacity: Long get() = diskBlockDevice?.capacity ?: 0L
 
+    /** MMIO base address Sedna assigned to the UART. Useful for boot-stub assembly. */
+    val uartBase: Long
+        get() = board.memoryMap.getMemoryRange(uart).orElseThrow {
+            IllegalStateException("UART has no memory range — board not initialized")
+        }.start
+
     init {
         // Devices must be added before initialize() so the device tree includes them.
         board.addDevice(ramBase, ram)
         board.addDevice(uart)
         board.setStandardOutputDevice(uart)
         virtioBlock?.let { board.addDevice(it) }
+        // bootArgs lands in the auto-built device tree as `chosen/bootargs` —
+        // Linux reads it as the kernel command line on entry.
+        bootArgs?.let { board.setBootArguments(it) }
+        // Firmware/kernel goes at the address Sedna's reset vector will jump
+        // to. Loading must happen after addDevice (so RAM is mapped) and
+        // before initialize() (so the CPU reset registers see the bytes).
+        bootImage?.let {
+            ControlPlaneBoot.loadBytes(board.memoryMap, board.defaultProgramStart, it)
+        }
         board.initialize()
         board.setRunning(true)
     }

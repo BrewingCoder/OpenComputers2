@@ -28,7 +28,8 @@ What's wired up today, vs what the rest of this doc describes as the target.
 | Cycle counter NBT persistence | ✅ shipped | Persists every ~16M cycles |
 | **Disk image keyed on per-BE UUID** | ⚠️ interim | Doc target is per-player UUID — single-player works either way; multiplayer + singleton-per-player enforcement lands with the registry. |
 | `OC2ControlPlaneRegistry` + singleton-per-player | ⏳ deferred | Needed before MP. |
-| Linux kernel + initramfs default image | ⏳ deferred | Needs cross-compiled vmlinux + busybox initramfs as mod resources. With no firmware loaded the CPU spins on illegal-instruction traps — that's the proof-of-life signal that the cycle counter ticks. |
+| Boot-path scaffolding (load image into RAM at `defaultProgramStart`, set `bootargs`) | ✅ shipped | `platform/vm/ControlPlaneBoot`. Includes a 16-byte RV64 stub that writes one byte to UART16550A — the first end-to-end proof that real instructions execute and host-side `ConsoleCapture` sees the output. |
+| Linux kernel + initramfs default image | ⏳ deferred | Needs cross-compiled OpenSBI fw_jump.bin + vmlinux + busybox initramfs as mod resources. The boot path above accepts them today via `bootImage` — drop bytes in, set `bootArgs`, go. With no firmware loaded the CPU spins on illegal-instruction traps. |
 | virtio-console for in-world terminal screen | ⏳ deferred | UART covers boot console; virtio-console + terminal screen ship together. |
 | virtio chardev `/dev/oc2net` | ⏳ deferred | Needs both host bridge + guest kernel module. |
 | 9P host mount `/mnt/host` | ⏳ deferred | Sedna ships `VirtIOFileSystemDevice`; we just haven't wired it. |

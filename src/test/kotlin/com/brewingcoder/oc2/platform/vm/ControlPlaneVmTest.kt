@@ -87,8 +87,7 @@ class ControlPlaneVmTest {
     @Test
     fun `console capture is empty on a freshly-stepped VM with no firmware`() {
         // No kernel loaded → CPU spins on illegal-instruction traps → no UART output.
-        // This documents the current proof-of-life baseline; once a kernel ships,
-        // this test moves to "console contains kernel banner" instead.
+        // ControlPlaneBootTest covers the opt-in path where a bootImage is supplied.
         ControlPlaneVm(ramBytes = 1 * 1024 * 1024).use { vm ->
             vm.step(50_000)
             vm.console.byteCount shouldBe 0
