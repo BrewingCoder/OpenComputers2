@@ -3,6 +3,7 @@ package com.brewingcoder.oc2.platform.script
 import com.brewingcoder.oc2.platform.os.ShellOutput
 import com.brewingcoder.oc2.platform.peripheral.BlockPeripheral
 import com.brewingcoder.oc2.platform.peripheral.BridgePeripheral
+import com.brewingcoder.oc2.platform.peripheral.ControlPlanePeripheral
 import com.brewingcoder.oc2.platform.peripheral.CrafterPeripheral
 import com.brewingcoder.oc2.platform.peripheral.MachineCrafterPeripheral
 import com.brewingcoder.oc2.platform.peripheral.EnergyPeripheral
@@ -255,6 +256,7 @@ class CobaltLuaHost : ScriptHost {
             is FluidPeripheral -> wrapFluid(p)
             is EnergyPeripheral -> wrapEnergy(p)
             is BlockPeripheral -> wrapBlock(p)
+            is ControlPlanePeripheral -> wrapControlPlane(p)
             else -> return Constants.NIL
         }
         // Stamp getLocation() onto every peripheral table — returns x, y, z as three values.
@@ -427,6 +429,36 @@ class CobaltLuaHost : ScriptHost {
             rs.setOutput(args.arg(1).toInteger().toInt())
             Constants.NIL
         })
+        return t
+    }
+
+    /**
+     * Tier-2 Control Plane handle. Lua surface mirrors [ControlPlanePeripheral]:
+     *   cp:cycles()              → number (cumulative since boot)
+     *   cp:isPowered()           → bool
+     *   cp:togglePower()         → bool (new state)
+     *   cp:consoleTail(n)        → list of strings (1-indexed Lua array)
+     *   cp:consoleClear()        → nil
+     *   cp:diskCapacity()        → number bytes
+     *   cp:describe()            → string
+     */
+    private fun wrapControlPlane(cp: ControlPlanePeripheral): LuaTable {
+        val t = LuaTable()
+        t.rawset("kind", ValueFactory.valueOf(cp.kind))
+        t.rawset("name", ValueFactory.valueOf(cp.name))
+        t.rawset("cycles", method(t) { ValueFactory.valueOf(cp.cycles().toDouble()) })
+        t.rawset("isPowered", method(t) { ValueFactory.valueOf(cp.isPowered()) })
+        t.rawset("togglePower", method(t) { ValueFactory.valueOf(cp.togglePower()) })
+        t.rawset("consoleTail", method(t) { args ->
+            val n = if (args.count() >= 1) args.arg(1).toInteger().toInt() else 8
+            val lines = cp.consoleTail(n)
+            val arr = LuaTable()
+            for ((i, line) in lines.withIndex()) arr.rawset(i + 1, ValueFactory.valueOf(line))
+            arr
+        })
+        t.rawset("consoleClear", method(t) { cp.consoleClear(); Constants.NIL })
+        t.rawset("diskCapacity", method(t) { ValueFactory.valueOf(cp.diskCapacity().toDouble()) })
+        t.rawset("describe", method(t) { ValueFactory.valueOf(cp.describe()) })
         return t
     }
 

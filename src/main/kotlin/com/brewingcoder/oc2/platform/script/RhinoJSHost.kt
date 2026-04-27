@@ -3,6 +3,7 @@ package com.brewingcoder.oc2.platform.script
 import com.brewingcoder.oc2.platform.os.ShellOutput
 import com.brewingcoder.oc2.platform.peripheral.BlockPeripheral
 import com.brewingcoder.oc2.platform.peripheral.BridgePeripheral
+import com.brewingcoder.oc2.platform.peripheral.ControlPlanePeripheral
 import com.brewingcoder.oc2.platform.peripheral.CrafterPeripheral
 import com.brewingcoder.oc2.platform.peripheral.MachineCrafterPeripheral
 import com.brewingcoder.oc2.platform.peripheral.EnergyPeripheral
@@ -152,6 +153,7 @@ class RhinoJSHost : ScriptHost {
             is EnergyPeripheral -> wrapEnergy(p, parent)
             is BlockPeripheral -> wrapBlock(p, parent)
             is BridgePeripheral -> wrapBridge(p, parent)
+            is ControlPlanePeripheral -> wrapControlPlane(p, parent)
             else -> return null
         }
         // Stamp getLocation() onto every peripheral object — returns {x, y, z}.
@@ -317,6 +319,27 @@ class RhinoJSHost : ScriptHost {
     }
 
     private val energyHandles: java.util.WeakHashMap<ScriptableObject, EnergyPeripheral> = java.util.WeakHashMap()
+
+    /** JS counterpart to [CobaltLuaHost.wrapControlPlane]. Read-mostly status surface for the Tier-2 VM. */
+    private fun wrapControlPlane(cp: ControlPlanePeripheral, parent: Scriptable): ScriptableObject {
+        val obj = NativeObject()
+        ScriptableObject.putProperty(obj, "kind", cp.kind)
+        ScriptableObject.putProperty(obj, "name", cp.name)
+        defineFsMethod(obj, "cycles", parent, 0) { _ -> cp.cycles().toDouble() }
+        defineFsMethod(obj, "isPowered", parent, 0) { _ -> cp.isPowered() }
+        defineFsMethod(obj, "togglePower", parent, 0) { _ -> cp.togglePower() }
+        defineFsMethod(obj, "consoleTail", parent, 1) { args ->
+            val n = (args.getOrNull(0) as? Number)?.toInt() ?: 8
+            val lines = cp.consoleTail(n)
+            val arr = cx().newArray(parent, lines.size)
+            for ((i, line) in lines.withIndex()) arr.put(i, arr, line)
+            arr
+        }
+        defineFsMethod(obj, "consoleClear", parent, 0) { _ -> cp.consoleClear(); Undefined.instance }
+        defineFsMethod(obj, "diskCapacity", parent, 0) { _ -> cp.diskCapacity().toDouble() }
+        defineFsMethod(obj, "describe", parent, 0) { _ -> cp.describe() }
+        return obj
+    }
 
     private fun wrapRedstone(rs: RedstonePeripheral, parent: Scriptable): ScriptableObject {
         val obj = NativeObject()

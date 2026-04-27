@@ -1,7 +1,11 @@
 package com.brewingcoder.oc2.block
 
 import com.brewingcoder.oc2.OpenComputers2
+import com.brewingcoder.oc2.platform.ChannelRegistrant
+import com.brewingcoder.oc2.platform.ChannelRegistry
+import com.brewingcoder.oc2.platform.Position
 import com.brewingcoder.oc2.platform.control.ControlPlaneRegistry
+import com.brewingcoder.oc2.platform.peripheral.ControlPlanePeripheral
 import com.brewingcoder.oc2.platform.vm.ControlPlaneDisk
 import com.brewingcoder.oc2.platform.vm.ControlPlaneVm
 import com.brewingcoder.oc2.storage.OC2ServerContext
@@ -14,6 +18,8 @@ import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.storage.LevelResource
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.TimeUnit
+import java.util.function.Supplier
 
 /**
  * Lower-half BE for [ControlPlaneBlock]. Owns a [ControlPlaneVm] (Sedna R5Board
@@ -36,7 +42,8 @@ import java.util.UUID
  *     a follow-up commit (needs cross-compiled vmlinux + busybox initramfs).
  */
 class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
-    BlockEntity(ModBlockEntities.CONTROL_PLANE.get(), pos, state) {
+    BlockEntity(ModBlockEntities.CONTROL_PLANE.get(), pos, state),
+    ControlPlanePeripheral, ChannelRegistrant {
 
     private var vm: ControlPlaneVm? = null
 
@@ -57,26 +64,81 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
      */
     private var powered: Boolean = true
 
-    val isPowered: Boolean get() = powered
+    /**
+     * WiFi channel for `peripheral.find()` discovery from a Computer. Same
+     * default + same trim/length rules as Computer/WiFiExtender so a freshly
+     * placed Control Plane is immediately discoverable on the `default`
+     * channel without configuration.
+     */
+    override var channelId: String = DEFAULT_CHANNEL
+        private set
+
+    override val location: Position
+        get() = Position(blockPos.x, blockPos.y, blockPos.z)
+
+    override val kind: String
+        get() = REGISTRANT_KIND
+
+    override val name: String
+        get() = "controlplane@${blockPos.x},${blockPos.y},${blockPos.z}"
+
+    /** Server-only — client BEs are visual stand-ins and don't touch the registry. */
+    private val registryShouldTrack: Boolean
+        get() = level?.isClientSide == false
+
+    override fun onLoad() {
+        super.onLoad()
+        if (registryShouldTrack) ChannelRegistry.register(this)
+    }
 
     /** Cheap status string for the right-click message + future status display. */
-    fun statusLine(): String {
+    fun statusLine(): String = onServerThread {
         val v = vm
         val powerLabel = if (powered) "ON" else "OFF"
         if (v == null) {
-            return "Control Plane [$powerLabel]: VM not booted (persisted=$persistedCycles cycles)"
+            return@onServerThread "Control Plane [$powerLabel]: VM not booted (persisted=$persistedCycles cycles)"
         }
         val recent = v.console.recentLines(2).joinToString(" | ")
         val tail = if (recent.isNotEmpty()) " | $recent" else ""
-        return "Control Plane [$powerLabel]: ${v.describe()}$tail"
+        "Control Plane [$powerLabel]: ${v.describe()}$tail"
     }
 
     /**
-     * Flip the powered flag, with the side effect of closing the live VM if
-     * we're powering off. Returns the new powered state. Caller (the Block's
-     * use handler) is responsible for `setChanged` flush + chat feedback.
+     * Reassign channel. Empty/blank channels coerce to [DEFAULT_CHANNEL] so the
+     * Control Plane never falls off the registry entirely. Caller is responsible
+     * for `setChanged` flush; we do it here too because most callers (config GUI)
+     * forget.
      */
-    fun togglePower(): Boolean {
+    fun setChannel(newChannel: String) {
+        val cleaned = newChannel.trim().take(MAX_CHANNEL_LENGTH).ifBlank { DEFAULT_CHANNEL }
+        if (cleaned == channelId) return
+        if (registryShouldTrack) ChannelRegistry.unregister(this)
+        channelId = cleaned
+        if (registryShouldTrack) ChannelRegistry.register(this)
+        setChanged()
+        OpenComputers2.LOGGER.info("control plane @ {} channel -> '{}'", blockPos, channelId)
+    }
+
+    // ------------------------------------------------------------------
+    // ControlPlanePeripheral implementation
+    // ------------------------------------------------------------------
+    //
+    // Methods marshal onto the server thread because both [vm] and [powered]
+    // are mutated on the server tick. Even though Long/Boolean reads are atomic
+    // on the JVM, marshaling gives consistent visibility across power cycles
+    // (e.g. cycles() reading after togglePower() returns 0, not the stale live
+    // counter from the closed VM).
+
+    override fun cycles(): Long = onServerThread { vm?.cycles ?: persistedCycles }
+
+    override fun isPowered(): Boolean = onServerThread { powered }
+
+    /**
+     * Flip the powered flag, with the side effect of closing the live VM if
+     * we're powering off. Returns the new powered state. Block's use handler
+     * still calls this; scripts reach it via `peripheral.find("controlplane"):togglePower()`.
+     */
+    override fun togglePower(): Boolean = onServerThread {
         powered = !powered
         if (!powered) {
             // Drain any final UART output before closing so the status line
@@ -85,7 +147,34 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
             vm = null
         }
         setChanged()
-        return powered
+        powered
+    }
+
+    override fun consoleTail(maxLines: Int): List<String> = onServerThread {
+        vm?.console?.recentLines(maxLines.coerceAtLeast(0)) ?: emptyList()
+    }
+
+    override fun consoleClear() {
+        onServerThread { vm?.console?.clear() }
+    }
+
+    override fun diskCapacity(): Long = onServerThread { vm?.diskCapacity ?: 0L }
+
+    override fun describe(): String = onServerThread {
+        val powerLabel = if (powered) "ON" else "OFF"
+        val v = vm ?: return@onServerThread "ControlPlane[$powerLabel, not booted]"
+        "ControlPlane[$powerLabel, ${v.describe()}]"
+    }
+
+    /**
+     * Marshal [body] onto the server thread. Reads + writes against [vm] and
+     * [powered] need to be coherent with the tick loop, so worker-thread script
+     * calls submit a Supplier and block up to 5s. Same pattern as MonitorBlockEntity.
+     */
+    private fun <T> onServerThread(body: () -> T): T {
+        val server = level?.server
+        if (server == null || server.isSameThread) return body()
+        return server.submit(Supplier(body)).get(5, TimeUnit.SECONDS)
     }
 
     /** Called every server tick by [ControlPlaneBlock.getTicker]. */
@@ -164,6 +253,7 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         // way the VM should release its file descriptor — chunk reload will boot
         // a fresh VM next tick. Disk file persists; gardening orphans is a
         // separate (manual) gesture today.
+        if (registryShouldTrack) ChannelRegistry.unregister(this)
         vm?.close()
         vm = null
         super.setRemoved()
@@ -178,6 +268,7 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         val live = vm?.cycles ?: persistedCycles
         tag.putLong(NBT_CYCLES, live)
         tag.putBoolean(NBT_POWERED, powered)
+        tag.putString(NBT_CHANNEL, channelId)
         vmUuid?.let { tag.putUUID(NBT_VM_UUID, it) }
     }
 
@@ -189,15 +280,23 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         // Default-true preserves the prior behavior for blocks placed before
         // power state existed — they keep ticking after the upgrade.
         powered = if (tag.contains(NBT_POWERED)) tag.getBoolean(NBT_POWERED) else true
+        if (tag.contains(NBT_CHANNEL)) {
+            channelId = tag.getString(NBT_CHANNEL).ifBlank { DEFAULT_CHANNEL }
+        }
         if (tag.hasUUID(NBT_VM_UUID)) {
             vmUuid = tag.getUUID(NBT_VM_UUID)
         }
     }
 
     companion object {
+        const val REGISTRANT_KIND: String = "controlplane"
+        const val DEFAULT_CHANNEL: String = "default"
+        const val MAX_CHANNEL_LENGTH: Int = 32
+
         private const val NBT_CYCLES = "cycles"
         private const val NBT_VM_UUID = "vm_uuid"
         private const val NBT_POWERED = "powered"
+        private const val NBT_CHANNEL = "channelId"
 
         /**
          * Persist on cycle counts where the low N bits are zero, so we flush every
