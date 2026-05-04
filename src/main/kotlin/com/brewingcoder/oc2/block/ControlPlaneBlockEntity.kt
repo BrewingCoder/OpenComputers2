@@ -6,6 +6,7 @@ import com.brewingcoder.oc2.platform.ChannelRegistry
 import com.brewingcoder.oc2.platform.Position
 import com.brewingcoder.oc2.platform.control.ControlPlaneRegistry
 import com.brewingcoder.oc2.platform.peripheral.ControlPlanePeripheral
+import com.brewingcoder.oc2.platform.vm.BuiltinFirmware
 import com.brewingcoder.oc2.platform.vm.ControlPlaneDisk
 import com.brewingcoder.oc2.platform.vm.ControlPlaneSnapshotStore
 import com.brewingcoder.oc2.platform.vm.ControlPlaneVm
@@ -47,6 +48,14 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
     ControlPlanePeripheral, ChannelRegistrant {
 
     private var vm: ControlPlaneVm? = null
+
+    /**
+     * If VM construction failed catastrophically (e.g. JPMS InaccessibleObjectException
+     * from Sedna's R5CPUGenerator codegen path under NeoForge child-module-layer
+     * loading), set this to skip future bootVm attempts so the BE doesn't crash
+     * the server every tick. Block stays placed and breakable.
+     */
+    private var vmBootFailed: Boolean = false
 
     /** Cycles persisted across saves; the running [vm] tracks live cycles separately. */
     private var persistedCycles: Long = 0L
@@ -97,9 +106,13 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         if (v == null) {
             return@onServerThread "Control Plane [$powerLabel]: VM not booted (persisted=$persistedCycles cycles)"
         }
-        val recent = v.console.recentLines(2).joinToString(" | ")
-        val tail = if (recent.isNotEmpty()) " | $recent" else ""
-        "Control Plane [$powerLabel]: ${v.describe()}$tail"
+        // Dump the recent console tail on its own lines. This is the
+        // closest thing to a "terminal" until the real screen ships;
+        // both chat and the LOGGER show the kernel boot trace.
+        val recent = v.console.recentLines(STATUS_TAIL_LINES)
+        val header = "Control Plane [$powerLabel]: ${v.describe()}"
+        if (recent.isEmpty()) header
+        else header + "\n" + recent.joinToString("\n")
     }
 
     /**
@@ -182,7 +195,8 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         val lvl = level ?: return
         if (lvl.isClientSide) return
         if (!powered) return
-        val v = vm ?: bootVm(lvl as ServerLevel)
+        if (vmBootFailed) return
+        val v = vm ?: bootVm(lvl as ServerLevel) ?: return
         v.step(ControlPlaneVm.DEFAULT_CYCLES_PER_TICK)
         // Persist just often enough that a sudden world unload doesn't lose
         // observable progress; the chunk save path is the real flush.
@@ -192,26 +206,36 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         }
     }
 
-    private fun bootVm(serverLevel: ServerLevel): ControlPlaneVm {
+    private fun bootVm(serverLevel: ServerLevel): ControlPlaneVm? {
         val diskFile = resolveDiskFile(serverLevel)
         val identity = vmIdentity(serverLevel)
         val store = snapshotStore(serverLevel)
         val hasSnapshot = store.exists(identity)
+        // Single firmware handle reused across the three construction sites
+        // below. Cheap — exists/open are classpath lookups; isAvailable is
+        // memoized inside BuiltinFirmware.
+        val firmware = BuiltinFirmware.fromClasspath()
         // Streaming restore: the constructor reads the InputStream during init
         // and we hand it back to readWith's auto-close. If the constructor
         // throws (corrupt snapshot, format drift), readWith returns null
         // because we threw out — we recover by booting fresh below.
+        // Catch Throwable, not just Exception: Sedna's R5CPUGenerator throws
+        // AssertionError (an Error, not Exception) when JPMS denies access to
+        // ClassLoader.defineClass. Letting that bubble up crashes the server
+        // tick loop; we set vmBootFailed so future ticks skip retry instead.
         val v = try {
             store.readWith(identity) { stream ->
                 ControlPlaneVm(
                     diskFile = diskFile,
                     diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
                     snapshotStream = stream,
+                    firmware = firmware,
                 )
             } ?: ControlPlaneVm(
                 diskFile = diskFile,
                 diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
-                bannerText = DEFAULT_BANNER,
+                bannerText = if (firmware.isAvailable) null else DEFAULT_BANNER,
+                firmware = firmware,
             )
         } catch (ex: Exception) {
             // Stale or corrupt snapshot must not brick the BE. Leave the bad
@@ -221,11 +245,31 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
                 blockPos,
                 ex.message,
             )
-            ControlPlaneVm(
-                diskFile = diskFile,
-                diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
-                bannerText = DEFAULT_BANNER,
+            try {
+                ControlPlaneVm(
+                    diskFile = diskFile,
+                    diskSizeBytes = ControlPlaneDisk.DEFAULT_SIZE_BYTES,
+                    bannerText = if (firmware.isAvailable) null else DEFAULT_BANNER,
+                    firmware = firmware,
+                )
+            } catch (fatal: Throwable) {
+                vmBootFailed = true
+                OpenComputers2.LOGGER.error(
+                    "control plane @ {} fresh-boot failed fatally ({}); BE disabled until restart",
+                    blockPos,
+                    fatal.javaClass.simpleName + ": " + fatal.message,
+                )
+                return null
+            }
+        } catch (fatal: Throwable) {
+            // R5CPUGenerator AssertionError lands here — Error, not Exception.
+            vmBootFailed = true
+            OpenComputers2.LOGGER.error(
+                "control plane @ {} VM construction failed fatally ({}); BE disabled until restart",
+                blockPos,
+                fatal.javaClass.simpleName + ": " + fatal.message,
             )
+            return null
         }
         vm = v
         val origin = if (hasSnapshot) "restored" else "fresh"
@@ -371,6 +415,9 @@ class ControlPlaneBlockEntity(pos: BlockPos, state: BlockState) :
         private const val NBT_VM_UUID = "vm_uuid"
         private const val NBT_POWERED = "powered"
         private const val NBT_CHANNEL = "channelId"
+
+        /** Lines of UART tail to include in [statusLine]. */
+        private const val STATUS_TAIL_LINES: Int = 30
 
         /**
          * Default banner emitted on fresh boot when no kernel resource is

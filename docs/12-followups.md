@@ -330,6 +330,32 @@ Other adapters (CC, ID, NeoForge caps) deferred.
   vmlinux drops into `assets/oc2/control-plane/`, that takes over and the
   banner becomes the no-kernel fallback.
 
+### Sedna JPMS access — RESOLVED via build-time bytecode patch (2026-04-27)
+
+`R5CPUGenerator` reflectively calls `setAccessible(true)` on
+`ClassLoader.defineClass` to JIT-compile a per-VM CPU class. NeoForge's
+ModLauncher loads `sedna-1.1.0+105.jar` into a CHILD module layer as
+auto-module `sedna._105`, which the JVM `--add-opens=java.base/java.lang=...`
+flag can't target. Several runtime workarounds (programmatic implAddOpens,
+Unsafe-based override field bypass, IMPL_LOOKUP, sedna-named module open)
+all failed against Java 21's reflection filter and the layered-module model.
+
+**Shipped fix:** `tasks.register('patchSednaJar')` in `build.gradle` rewrites
+`R5CPUGenerator.generateClass()` at build time. It removes the reflective
+`Class.getDeclaredMethod("defineClass", …).setAccessible(true).invoke(…)`
+sequence and splices in a single `MethodHandles.lookup().defineClass(byte[])`
+call — a Java 9+ API that defines into the lookup class's own package
+(Sedna's generated class lives in `li.cil.sedna.riscv`, same package as
+`R5CPUGenerator`, so the constraint is satisfied). The patched jar lives at
+`build/patched/sedna-1.1.0+105-patched.jar` and is wired into
+`additionalRuntimeClasspathConfiguration` via a lazy closure. Production
+shadowJar still bundles unpatched Sedna; we'll re-evaluate when shadowJar
+testing reveals whether the patch is needed there too.
+
+`ControlPlaneBlockEntity.bootVm` keeps its `Throwable` catch + `vmBootFailed`
+flag as defensive cover for any future fatal VM-construction error — it's
+cheap and doesn't belong in the rollback list.
+
 ### Next — kernel + initramfs (no firmware = no boot)
 
 The plumbing is there but the VM has nothing to execute. Without firmware

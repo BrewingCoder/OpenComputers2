@@ -1,0 +1,6 @@
+{
+  "variants": {
+    "half=lower": { "model": "oc2:block/control_plane_lower" },
+    "half=upper": { "model": "oc2:block/control_plane_upper" }
+  }
+}

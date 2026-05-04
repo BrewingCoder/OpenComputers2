@@ -1,0 +1,4 @@
+# Build outputs (the four firmware blobs). Rebuild via ./build.sh.
+# When we cut a release we'll either commit these via git-lfs or attach them
+# as a release asset — TBD. For now developers rebuild locally.
+output/

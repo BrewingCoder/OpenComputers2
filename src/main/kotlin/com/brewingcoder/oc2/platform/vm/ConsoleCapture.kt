@@ -68,7 +68,12 @@ class ConsoleCapture(val capacity: Int = DEFAULT_CAPACITY) {
     }
 
     companion object {
-        /** 4 KB — enough for the boot banner + a few kernel log lines. */
-        const val DEFAULT_CAPACITY: Int = 4 * 1024
+        /**
+         * 64 KB — big enough to keep a full kernel boot log (banner + kmsg
+         * up to userspace handoff) without wrapping. The original 4 KB cap
+         * lost the tail of OpenSBI's trap-error dump (mtval/mepc/mstatus),
+         * which is the most useful info when the kernel won't boot.
+         */
+        const val DEFAULT_CAPACITY: Int = 64 * 1024
     }
 }

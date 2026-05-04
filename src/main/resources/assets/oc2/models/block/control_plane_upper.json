@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "oc2:block/control_plane_side",
+    "north": "oc2:block/control_plane_side",
+    "south": "oc2:block/control_plane_side",
+    "east":  "oc2:block/control_plane_side",
+    "west":  "oc2:block/control_plane_side",
+    "up":    "oc2:block/control_plane_top",
+    "down":  "oc2:block/control_plane_top"
+  }
+}

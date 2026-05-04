@@ -4,6 +4,7 @@
   "block.oc2.monitor": "Monitor",
   "block.oc2.adapter": "Adapter",
   "block.oc2.wifi_extender": "WiFi Extender",
+  "block.oc2.control_plane": "Control Plane",
   "item.oc2.inventory_part": "Inventory Part",
   "item.oc2.redstone_part": "Redstone Part",
   "item.oc2.fluid_part": "Fluid Part",

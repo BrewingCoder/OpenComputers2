@@ -3,6 +3,7 @@ package com.brewingcoder.oc2.platform.vm
 import it.unimi.dsi.fastutil.bytes.ByteArrayFIFOQueue
 import it.unimi.dsi.fastutil.ints.Int2LongArrayMap
 import li.cil.ceres.Ceres
+import li.cil.sedna.Sedna
 import li.cil.sedna.device.block.SparseBlockDevice
 import li.cil.sedna.device.virtio.VirtIOFileSystemDevice
 import li.cil.sedna.riscv.R5CPU
@@ -59,6 +60,15 @@ object SednaSerializerRegistration {
         if (!initialized.compareAndSet(false, true)) return
         // Initialize Ceres' built-in array serializers (idempotent on Ceres' side).
         Ceres.initialize()
+        // Register Sedna's DeviceTreeProviders (UART16550A, VirtIO, PhysicalMemory,
+        // CLINT, PLIC, FlashMemory, GoldfishRTC, etc.) into the DeviceTreeRegistry.
+        // Without this, R5Board.buildDeviceTree() emits a DTB with only the CPU
+        // node + an empty `soc` bus — no UART, no memory, no virtio, no
+        // stdout-path — and the kernel boots into a silent console because it
+        // can't find any devices to bind to. Sedna.initialize() also re-registers
+        // the Ceres serializers below; the explicit putSerializer calls remain as
+        // a belt-and-suspenders for older Sedna builds that didn't ship them.
+        Sedna.initialize()
         // Sedna's customs — order doesn't matter, but match the package layout
         // for grep-friendliness.
         Ceres.putSerializer(R5CPU::class.java, R5CPUSerializer())
