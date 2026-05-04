@@ -1,5 +1,31 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
+// ASM on the buildscript classpath — used by the patchSednaJar task to rewrite
+// R5CPUGenerator's reflective ClassLoader.defineClass call (which Java 21's
+// JPMS blocks for child-layer modules) into a MethodHandles.Lookup.defineClass
+// call (which doesn't need setAccessible). See the task definition below.
+buildscript {
+    repositories { mavenCentral() }
+    dependencies {
+        classpath 'org.ow2.asm:asm:9.7.1'
+        classpath 'org.ow2.asm:asm-tree:9.7.1'
+    }
+}
+
+import org.objectweb.asm.ClassReader
+import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.Opcodes
+import org.objectweb.asm.tree.ClassNode
+import org.objectweb.asm.tree.InsnList
+import org.objectweb.asm.tree.InsnNode
+import org.objectweb.asm.tree.JumpInsnNode
+import org.objectweb.asm.tree.LdcInsnNode
+import org.objectweb.asm.tree.FieldInsnNode
+import org.objectweb.asm.tree.LabelNode
+import org.objectweb.asm.tree.MethodInsnNode
+import org.objectweb.asm.tree.TypeInsnNode
+import org.objectweb.asm.tree.VarInsnNode
+
 plugins {
     id 'java-library'
     id 'idea'
@@ -75,8 +101,18 @@ neoForge {
             // Sedna isn't shipped by any other mod, so it has to be on the dev runtime
             // classpath explicitly (shade alone only affects shadowJar). Same applies
             // to its transitive deps — the POM doesn't declare them, so we add each.
+            //
+            // We use the PATCHED sedna jar (R5CPUGenerator's reflective defineClass
+            // call swapped for MethodHandles.Lookup.defineClass) — see patchSednaJar.
+            // The unpatched jar fails on world-load with InaccessibleObjectException
+            // because NeoForge loads sedna as an auto-module in a child layer the
+            // JVM `--add-opens` flag can't target.
+            // Closure form is evaluated lazily, so patchSednaJar can be
+            // declared after this configureEach block runs.
             additionalRuntimeClasspathConfiguration.dependencies.add(
-                project.dependencies.create('li.cil.sedna:sedna:1.1.0+105')
+                project.dependencies.create(
+                    project.files({ tasks.named('patchSednaJar').get().outputs.files })
+                )
             )
             additionalRuntimeClasspathConfiguration.dependencies.add(
                 project.dependencies.create('org.ow2.asm:asm:9.7.1')
@@ -91,7 +127,12 @@ neoForge {
                 project.dependencies.create('li.cil.ceres:ceres:0.0.3+22')
             )
             // Sedna's R5CPUGenerator reflectively calls protected ClassLoader.defineClass.
-            // Without this open, Java 16+ throws InaccessibleObjectException on first VM tick.
+            // NeoForge's ModLauncher loads sedna-1.1.0+105.jar into a CHILD module layer
+            // as auto-module `sedna._105`, which the JVM boot layer can't see — so
+            // `--add-opens=...=sedna._105` is rejected with "Unknown module". The actual
+            // open is done programmatically in `SednaSerializerRegistration.init` via
+            // `Module.implAddOpens` reflection (which works because we have ALL-UNNAMED here
+            // as a trampoline for setAccessible).
             jvmArguments.add '--add-opens=java.base/java.lang=ALL-UNNAMED'
             // Cobalt is intentionally omitted here — CC:Tweaked bundles its own copy
             // and putting a second cc.tweaked.cobalt module on the path causes a
@@ -171,6 +212,10 @@ configurations {
     // `compileOnly`; dev runtime pulls Cobalt from CC:T and Rhino from
     // additionalRuntimeClasspathConfiguration below.
     shade
+
+    // Resolves the original sedna jar in isolation (no transitives) so the
+    // `patchSednaJar` task can rewrite it without dragging in ASM/fastutil/etc.
+    sednaOriginal
 }
 
 repositories {
@@ -281,6 +326,10 @@ dependencies {
     compileOnly "mezz.jei:jei-1.21.1-neoforge-api:${jei_version}"
     localRuntime "mezz.jei:jei-1.21.1-neoforge:${jei_version}"
 
+    // Original Sedna for the `patchSednaJar` task — no transitives, we want the
+    // raw jar so we can rewrite R5CPUGenerator and re-pack it.
+    sednaOriginal('li.cil.sedna:sedna:1.1.0+105') { transitive = false }
+
     // Test stack — JUnit5 platform + Kotest assertions (cleaner than vanilla JUnit assertions).
     // See docs/11-engineering-rules.md — Rule A demands tests, Rule B demands testable seams.
     testImplementation platform('org.junit:junit-bom:5.11.4')
@@ -335,6 +384,19 @@ tasks.withType(ProcessResources).configureEach {
     inputs.properties replaceProperties
     filesMatching(['META-INF/neoforge.mods.toml', 'META-INF/build.properties']) {
         expand replaceProperties
+    }
+
+    // Control Plane firmware: pull the four RISC-V blobs (kernel, OpenSBI,
+    // bootfs initramfs, rootfs userland) out of tools/buildroot/output/ — they
+    // live there because Buildroot writes them there and they're gitignored
+    // (large GPL'd binaries; the build is the source of truth, not the repo).
+    // shadowJar inherits these into the production jar via the standard
+    // resources path. When buildroot hasn't been run, the blobs are absent
+    // and BuiltinFirmware.isAvailable returns false at runtime — boot falls
+    // back to the bannerStub gracefully.
+    from(file('tools/buildroot/output')) {
+        include 'fw_jump.bin', 'Image', 'bootfs.squashfs', 'rootfs.cramfs'
+        into 'data/oc2/control-plane/firmware'
     }
 }
 
@@ -395,3 +457,379 @@ tasks.shadowJar {
 
 tasks.named('assemble').configure { dependsOn tasks.shadowJar }
 tasks.named('build').configure { dependsOn tasks.shadowJar }
+
+// --- Sedna jar patcher ----------------------------------------------------
+//
+// Sedna's R5CPUGenerator generates a CPU class at runtime by reflectively
+// invoking `ClassLoader.defineClass` (a protected method) with setAccessible(true).
+// On Java 16+ that requires `--add-opens=java.base/java.lang=<module>` for the
+// caller's module. NeoForge's ModLauncher loads sedna into a CHILD module layer
+// as auto-module `sedna._105`, but JVM `--add-opens` only targets boot-layer
+// modules — so the open never lands and we get InaccessibleObjectException.
+//
+// Several runtime workarounds were attempted and abandoned (see git history
+// around 2026-04-27):
+//   - JVM `--add-opens=java.base/java.lang=sedna._105` — JVM rejects with
+//     "Unknown module" because sedna isn't in the boot layer.
+//   - `Module.implAddOpens` reflection at mod init — Java 21's reflection
+//     filter blocks `AccessibleObject.override` and `Lookup.IMPL_LOOKUP`.
+//   - Self-attach Java agent — requires `-Djdk.attach.allowAttachSelf=true`
+//     and is brittle across JVM updates.
+//
+// The surgical fix: rewrite R5CPUGenerator.generateClass at build time so it
+// uses `MethodHandles.lookup().defineClass(byte[])` instead. That API was
+// added in Java 9 specifically for this scenario — defines a class into the
+// caller's package, no setAccessible required, no JPMS opens needed.
+//
+// The generated class lives in package `li.cil.sedna.riscv` (same as
+// R5CPUGenerator), so Lookup.defineClass's same-package requirement is met.
+tasks.register('patchSednaJar') {
+    description = 'Rewrites Sedna\'s R5CPUGenerator to use MethodHandles.Lookup.defineClass instead of reflective ClassLoader.defineClass, sidestepping JPMS InaccessibleObjectException under NeoForge child-layer module loading.'
+    group = 'build'
+
+    // Capture configuration-time values as task-level locals so doLast doesn't
+    // reach back into Project (which configuration cache rejects).
+    def sednaInputs = configurations.sednaOriginal
+    inputs.files(sednaInputs)
+    def outputJar = layout.buildDirectory.file('patched/sedna-1.1.0+105-patched.jar')
+    outputs.file outputJar
+
+    doLast {
+        def sourceJar = sednaInputs.singleFile
+        def destJar = outputJar.get().asFile
+        destJar.parentFile.mkdirs()
+        if (destJar.exists()) destJar.delete()
+
+        // Class path inside the jar that we'll patch; everything else is copied verbatim.
+        def TARGET_CLASS_ENTRY = 'li/cil/sedna/riscv/R5CPUGenerator.class'
+        def TARGET_METHOD = 'generateClass'
+        def TEMPLATE_CLASS_ENTRY = 'li/cil/sedna/riscv/R5CPUTemplate.class'
+
+        def patchedBytes = null
+        def patchedTemplateBytes = null
+
+        // Open the jar twice: first pass to find + patch the target class, second
+        // pass to copy other entries. (Doing both in one pass means juggling
+        // streams; two passes is cheap, sedna jar is ~600 KB.)
+        new java.util.jar.JarFile(sourceJar).withCloseable { jin ->
+            def entry = jin.getEntry(TARGET_CLASS_ENTRY)
+            if (entry == null) {
+                throw new GradleException("Sedna jar is missing $TARGET_CLASS_ENTRY — version mismatch?")
+            }
+            def origBytes = jin.getInputStream(entry).withCloseable { it.bytes }
+
+            def reader = new ClassReader(origBytes)
+            def node = new ClassNode()
+            reader.accept(node, 0)
+
+            def methods = node.methods
+            def target = methods.find { it.name == TARGET_METHOD }
+            if (target == null) {
+                throw new GradleException("R5CPUGenerator has no method named $TARGET_METHOD")
+            }
+
+            // The reflective defineClass sequence we need to remove:
+            //   LDC class java/lang/ClassLoader
+            //   LDC "defineClass"
+            //   ICONST_4 / ANEWARRAY java/lang/Class / fill 4 args
+            //   INVOKEVIRTUAL Class.getDeclaredMethod  ← findable anchor
+            //   ASTORE 8
+            //   ALOAD 8 / ICONST_1 / INVOKEVIRTUAL Method.setAccessible(Z)V  ← THE PROBLEM
+            //   ALOAD 8 / build invoke args / INVOKEVIRTUAL Method.invoke
+            //   CHECKCAST class java/lang/Class
+            //   ASTORE 9 (the result Class)
+            //
+            // Strategy: find the LDC of "defineClass" (very stable anchor — only
+            // call site in the entire method), then walk forward to the
+            // `CHECKCAST class java/lang/Class` that ends the sequence. Remove
+            // that whole span and inject in its place:
+            //
+            //   INVOKESTATIC java/lang/invoke/MethodHandles.lookup()Lookup
+            //   ALOAD 7  (the bytes — local 7 is set by `astore 7` just before)
+            //   INVOKEVIRTUAL Lookup.defineClass([B)Class
+            //
+            // The trailing `ASTORE 9` stays in place — both old and new sequences
+            // leave a `Class` on the stack at exit.
+
+            def insns = target.instructions
+            def all = insns.toArray()
+
+            // 1. Find the LDC "defineClass" anchor.
+            int anchorIdx = -1
+            for (int i = 0; i < all.length; i++) {
+                def n = all[i]
+                if (n instanceof LdcInsnNode && n.cst == 'defineClass') {
+                    // The LDC right before this should be `LDC class java/lang/ClassLoader`.
+                    if (i > 0) {
+                        def prev = all[i - 1]
+                        if (prev instanceof LdcInsnNode &&
+                            org.objectweb.asm.Type.getInternalName(ClassLoader.class) ==
+                                (prev.cst instanceof org.objectweb.asm.Type ? prev.cst.internalName : null)) {
+                            anchorIdx = i - 1
+                            break
+                        }
+                    }
+                }
+            }
+            if (anchorIdx < 0) {
+                throw new GradleException("Could not locate `LDC class ClassLoader` + `LDC \"defineClass\"` anchor in $TARGET_METHOD — Sedna internals changed?")
+            }
+
+            // 2. Walk forward to the CHECKCAST java/lang/Class that ends the
+            //    reflective invocation. There's exactly one in this region.
+            int endIdx = -1
+            for (int i = anchorIdx; i < all.length; i++) {
+                def n = all[i]
+                if (n instanceof TypeInsnNode && n.opcode == Opcodes.CHECKCAST && n.desc == 'java/lang/Class') {
+                    endIdx = i
+                    break
+                }
+            }
+            if (endIdx < 0) {
+                throw new GradleException("Could not locate trailing CHECKCAST Class in $TARGET_METHOD — Sedna internals changed?")
+            }
+
+            logger.lifecycle("[patchSednaJar] removing instructions [$anchorIdx..$endIdx] from $TARGET_METHOD (${endIdx - anchorIdx + 1} insns)")
+
+            // 3. Build the replacement instruction list:
+            //   INVOKESTATIC MethodHandles.lookup() : Lookup
+            //   ALOAD 7   (the bytes — local 7 is set by `astore 7` just before)
+            //   INVOKEVIRTUAL Lookup.defineClass([B) : Class
+            def replacement = new InsnList()
+            replacement.add(new MethodInsnNode(
+                Opcodes.INVOKESTATIC,
+                'java/lang/invoke/MethodHandles',
+                'lookup',
+                '()Ljava/lang/invoke/MethodHandles$Lookup;',
+                false
+            ))
+            replacement.add(new VarInsnNode(Opcodes.ALOAD, 7))
+            replacement.add(new MethodInsnNode(
+                Opcodes.INVOKEVIRTUAL,
+                'java/lang/invoke/MethodHandles$Lookup',
+                'defineClass',
+                '([B)Ljava/lang/Class;',
+                false
+            ))
+
+            // 4. Splice: remove [anchorIdx..endIdx], insert replacement at that position.
+            def first = all[anchorIdx]
+            def last = all[endIdx]
+            // Insert replacement BEFORE `first`, then remove [first..last] inclusive.
+            insns.insertBefore(first, replacement)
+            for (int i = anchorIdx; i <= endIdx; i++) {
+                insns.remove(all[i])
+            }
+
+            // 5. Re-emit. COMPUTE_FRAMES recomputes stackmap frames from scratch
+            //    (COMPUTE_MAXS only handles stack/locals counts and leaves the
+            //    original frames in place — those frames reference offsets that
+            //    no longer exist after the splice, so the verifier rejects the
+            //    class with VerifyError "Inconsistent stackmap frames").
+            //
+            //    COMPUTE_FRAMES needs a way to resolve common super classes when
+            //    control flow merges. The default uses `Class.forName(...)` on
+            //    the JVM that's running gradle, which can't see sedna's own
+            //    classes (R5CPUGenerator$1, ClassRemapper, DecoderGenerator).
+            //    We override to return Object for unknown types — safe because
+            //    the only merges in generateClass are between JDK types
+            //    (InputStream, Throwable, byte[], Class), all of which Class.forName
+            //    can resolve.
+            def writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
+                @Override
+                protected String getCommonSuperClass(String type1, String type2) {
+                    try {
+                        return super.getCommonSuperClass(type1, type2)
+                    } catch (Throwable ignored) {
+                        // Sedna/ASM types we can't load — fall back to Object.
+                        return 'java/lang/Object'
+                    }
+                }
+            }
+            node.accept(writer)
+            patchedBytes = writer.toByteArray()
+        }
+
+        // Second patch: R5CPUTemplate.writeCSR — allow csr_swap(satp, 0) to actually
+        // clear satp.
+        //
+        // Sedna's writeCSR for satp validates the mode field: accepts only SV39
+        // (0x8000_0000_0000_0000) and SV48 (0x9000_0000_0000_0000). Any other
+        // mode (including mode=0 Bare) takes the "skip write, return false" path
+        // — silently ignoring the write.
+        //
+        // Linux's set_satp_mode does `csr_swap(CSR_SATP, 0ULL)` to turn MMU off
+        // between sv57/sv48 probe attempts. With Sedna's stock validation, that
+        // write is a no-op: MMU stays on with the previous satp value. The kernel
+        // then memsets early_pg_dir while still using it as the live page table
+        // root → instruction-fetch fault → trap loop at .Lsecondary_park.
+        //
+        // Patch: find the unconditional GOTO that follows the SV48 comparison
+        // (the "skip write" branch), and re-target it to the "do write" label.
+        // After this, Sedna writes the satp value regardless of mode field.
+        // Modes 8/9 work as before; mode 0 properly disables MMU; mode 10
+        // (sv57) gets stored, the kernel reads it back via csr_swap and finds
+        // the value matches — but Sedna's walker only knows sv39/sv48 levels,
+        // so any sv57 access faults. The kernel sees the faults during early
+        // boot and falls back to sv48 via its existing retry path.
+        new java.util.jar.JarFile(sourceJar).withCloseable { jin ->
+            def entry = jin.getEntry(TEMPLATE_CLASS_ENTRY)
+            if (entry == null) {
+                throw new GradleException("Sedna jar is missing $TEMPLATE_CLASS_ENTRY — version mismatch?")
+            }
+            def origBytes = jin.getInputStream(entry).withCloseable { it.bytes }
+            def reader = new ClassReader(origBytes)
+            def node = new ClassNode()
+            reader.accept(node, 0)
+
+            def writeCSR = node.methods.find { it.name == 'writeCSR' && it.desc == '(IJ)Z' }
+            if (writeCSR == null) {
+                throw new GradleException("R5CPUTemplate has no writeCSR(IJ)Z method")
+            }
+            def insns = writeCSR.instructions
+            def all = insns.toArray()
+
+            // Anchor: LDC2_W with the sv48 mode constant. This is the unique
+            // anchor for the satp branch (other lconst loads are for different
+            // CSRs or different bit values).
+            def SV48_MODE = -8070450532247928832L  // = 0x9000_0000_0000_0000
+            int anchorIdx = -1
+            for (int i = 0; i < all.length; i++) {
+                def n = all[i]
+                if (n instanceof LdcInsnNode && n.cst instanceof Long && (n.cst as Long) == SV48_MODE) {
+                    anchorIdx = i; break
+                }
+            }
+            if (anchorIdx < 0) {
+                throw new GradleException("Could not find SV48 mode LDC2_W in writeCSR — Sedna internals changed?")
+            }
+
+            // After the LDC2_W: LCMP, IFEQ <writeLabel>, GOTO <skipLabel>.
+            // We need to find the IFEQ (capture its target = writeLabel) and
+            // the GOTO (capture and re-target).
+            def writeLabel = null
+            def skipGoto = null
+            for (int i = anchorIdx + 1; i < Math.min(anchorIdx + 8, all.length); i++) {
+                def n = all[i]
+                if (n instanceof JumpInsnNode) {
+                    if (n.opcode == Opcodes.IFEQ) {
+                        writeLabel = n.label
+                    } else if (n.opcode == Opcodes.GOTO) {
+                        skipGoto = n
+                        break
+                    }
+                }
+            }
+            if (writeLabel == null || skipGoto == null) {
+                throw new GradleException("Could not find IFEQ/GOTO pair after SV48 anchor in writeCSR")
+            }
+
+            logger.lifecycle("[patchSednaJar] redirecting writeCSR satp-skip GOTO to writeLabel (allows mode=0 csr_swap)")
+            skipGoto.label = writeLabel
+
+            // Second sub-patch on R5CPUTemplate: insert a flushTLB() call right
+            // after the satp field is written, so the new translation actually
+            // takes effect.
+            //
+            // Sedna populates the fetch/load/store TLBs with identity mappings
+            // when MMU is off (satp.mode=0): each fetched page gets a TLB entry
+            // mapping VA→PA=VA. When the kernel later flips satp.mode to sv48,
+            // those stale identity entries remain in the TLB and are used in
+            // preference to walking the new page table — so fetches at low VA
+            // keep succeeding via the cached identity even though the new satp
+            // doesn't map low VA. The kernel falls through Linux's
+            // "trampoline-trap-bounce-to-high-VA" mechanism (because no fault
+            // ever fires) and ends up at low-VA stvec, eventually faulting.
+            //
+            // Real RISC-V hardware ties TLB entries to the active satp+ASID;
+            // changing satp.MODE generally invalidates them (or requires
+            // sfence.vma). Sedna doesn't honor this. We force a TLB flush
+            // right after every satp write — heavier than needed, but
+            // correct.
+            //
+            // Locate the IRETURN inside writeCSR that immediately follows the
+            // putfield satp:J. Insert before the IRETURN: aload_0 +
+            // invokespecial flushTLB()V.
+            def putfieldSatp = null
+            for (def n : writeCSR.instructions.toArray()) {
+                if (n instanceof org.objectweb.asm.tree.FieldInsnNode &&
+                    n.opcode == Opcodes.PUTFIELD &&
+                    n.name == 'satp' &&
+                    n.desc == 'J') {
+                    putfieldSatp = n
+                    break
+                }
+            }
+            if (putfieldSatp == null) {
+                throw new GradleException("Could not find PUTFIELD satp:J in writeCSR")
+            }
+            // The IRETURN comes 2 insns after PUTFIELD: ICONST_1, IRETURN.
+            // Walk forward past any label/frame nodes (opcode=-1) to find
+            // the next real bytecode instruction.
+            def afterPutfield = putfieldSatp.next
+            while (afterPutfield != null && afterPutfield.opcode == -1) {
+                afterPutfield = afterPutfield.next
+            }
+            if (afterPutfield == null || afterPutfield.opcode != Opcodes.ICONST_1) {
+                throw new GradleException("Expected ICONST_1 after PUTFIELD satp:J in writeCSR; got opcode=" +
+                    (afterPutfield == null ? "null" : afterPutfield.opcode.toString()))
+            }
+            def flushCall = new InsnList()
+            flushCall.add(new VarInsnNode(Opcodes.ALOAD, 0))
+            flushCall.add(new MethodInsnNode(
+                Opcodes.INVOKESPECIAL,
+                'li/cil/sedna/riscv/R5CPUTemplate',
+                'flushTLB',
+                '()V',
+                false
+            ))
+            writeCSR.instructions.insertBefore(afterPutfield, flushCall)
+            logger.lifecycle("[patchSednaJar] inserted flushTLB() after writeCSR satp putfield")
+
+            def writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
+                @Override
+                protected String getCommonSuperClass(String type1, String type2) {
+                    try { return super.getCommonSuperClass(type1, type2) }
+                    catch (Throwable ignored) { return 'java/lang/Object' }
+                }
+            }
+            node.accept(writer)
+            patchedTemplateBytes = writer.toByteArray()
+        }
+
+        // Write the new jar — copy every entry verbatim except the patched class.
+        new java.util.jar.JarFile(sourceJar).withCloseable { jin ->
+            new java.io.FileOutputStream(destJar).withCloseable { fout ->
+                new java.util.jar.JarOutputStream(fout).withCloseable { jout ->
+                    def entries = jin.entries()
+                    while (entries.hasMoreElements()) {
+                        def e = entries.nextElement()
+                        // Strip signature files — patched jar's signatures wouldn't validate
+                        // and JarLauncher would refuse to load it.
+                        if (e.name.startsWith('META-INF/') &&
+                            (e.name.endsWith('.SF') || e.name.endsWith('.DSA') || e.name.endsWith('.RSA'))) {
+                            continue
+                        }
+                        // Copy the original ZipEntry but reset compressed size so
+                        // JarOutputStream can recompute it for our buffer.
+                        def newEntry = new java.util.jar.JarEntry(e.name)
+                        newEntry.time = e.time
+                        jout.putNextEntry(newEntry)
+                        if (!e.isDirectory()) {
+                            if (e.name == TARGET_CLASS_ENTRY) {
+                                jout.write(patchedBytes)
+                            } else if (e.name == TEMPLATE_CLASS_ENTRY) {
+                                jout.write(patchedTemplateBytes)
+                            } else {
+                                jin.getInputStream(e).withCloseable { it.transferTo(jout) }
+                            }
+                        }
+                        jout.closeEntry()
+                    }
+                }
+            }
+        }
+
+        logger.lifecycle("[patchSednaJar] wrote ${destJar.absolutePath} (${destJar.length()} bytes)")
+    }
+}
